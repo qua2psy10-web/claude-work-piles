@@ -73,17 +73,36 @@ def test_qd_max_pinned():
 
 
 def test_f_specs_pinned():
-    """要確認: 中掘り系は砂質土 3N(≦150)・粘性土 c の可能性。"""
+    """打込み・場所打ちの式形は複数ソースで確認済み。
+
+    中掘り・プレボーリングは 2026-08-11 に 10N/0.8c → 3N/1.0c へ変更
+    (独立3ソースが一致、旧値は支持力を過大評価していた)。
+    """
     assert st.F_SPECS["打込み(打撃)"]["砂質土"] == (2.0, "N")
     assert st.F_MAX["打込み(打撃)"]["砂質土"] == 100.0
+    assert st.F_SPECS["打込み(打撃)"]["粘性土"] == (1.0, "c")
+    assert st.F_MAX["打込み(打撃)"]["粘性土"] == 150.0
+
     assert st.F_SPECS["場所打ち"]["砂質土"] == (5.0, "N")
-    assert st.F_MAX["場所打ち"]["砂質土"] == 200.0
+    assert st.F_MAX["場所打ち"]["砂質土"] == 200.0  # 要確認: 150 の可能性
     assert st.F_SPECS["場所打ち"]["粘性土"] == (1.0, "c")
     assert st.F_MAX["場所打ち"]["粘性土"] == 150.0
-    assert st.F_SPECS["中掘り"]["砂質土"] == (10.0, "N")
-    assert st.F_MAX["中掘り"]["砂質土"] == 200.0
-    assert st.F_SPECS["中掘り"]["粘性土"] == (0.8, "c")
-    assert st.F_MAX["中掘り"]["粘性土"] == 100.0
+
+    for method in ("中掘り", "プレボーリング"):
+        assert st.F_SPECS[method]["砂質土"] == (3.0, "N")
+        assert st.F_MAX[method]["砂質土"] == 150.0
+        assert st.F_SPECS[method]["粘性土"] == (1.0, "c")
+        assert st.F_MAX[method]["粘性土"] == 100.0
+
+    # 鋼管ソイルセメントは未照合のため旧値を据え置き
+    assert st.F_SPECS["鋼管ソイルセメント"]["砂質土"] == (10.0, "N")
+    assert st.F_MAX["鋼管ソイルセメント"]["砂質土"] == 200.0
+
+
+def test_cement_methods_are_not_shared_with_soil_cement():
+    """中掘り系と鋼管ソイルセメントは別テーブル(照合状況が異なるため)。"""
+    assert st.F_SPECS["中掘り"] is not st.F_SPECS["鋼管ソイルセメント"]
+    assert st.F_SPECS["中掘り"] is st.F_SPECS["プレボーリング"]
 
 
 def test_liquefaction_constants():

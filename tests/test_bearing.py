@@ -87,6 +87,41 @@ def test_skin_friction_caps():
     assert skin_friction_intensity(ConstructionMethod.CAST_IN_PLACE, clay) == 150.0
 
 
+def test_skin_friction_cement_methods():
+    """中掘り・プレボーリングは砂質土 3N(≦150)、粘性土 c(≦100)。"""
+    sand = SoilLayer(
+        soil_type=SoilType.SAND, thickness=1.0, n_value=20.0,
+        gamma_t=19.0, gamma_sat=20.0,
+    )
+    clay = SoilLayer(
+        soil_type=SoilType.CLAY, thickness=1.0, n_value=8.0,
+        gamma_t=16.0, gamma_sat=16.5, cohesion=80.0,
+    )
+    for method in (ConstructionMethod.INNER_DIGGING, ConstructionMethod.PREBORING):
+        assert skin_friction_intensity(method, sand) == pytest.approx(60.0)
+        assert skin_friction_intensity(method, clay) == pytest.approx(80.0)
+
+    # 上限で頭打ち
+    hard_sand = sand.model_copy(update={"n_value": 80.0})
+    stiff_clay = clay.model_copy(update={"cohesion": 200.0})
+    assert skin_friction_intensity(ConstructionMethod.INNER_DIGGING, hard_sand) == 150.0
+    assert skin_friction_intensity(ConstructionMethod.INNER_DIGGING, stiff_clay) == 100.0
+
+
+def test_soil_cement_keeps_separate_values():
+    """鋼管ソイルセメントは未照合のため中掘り系と異なる値のまま。"""
+    sand = SoilLayer(
+        soil_type=SoilType.SAND, thickness=1.0, n_value=10.0,
+        gamma_t=19.0, gamma_sat=20.0,
+    )
+    assert skin_friction_intensity(
+        ConstructionMethod.STEEL_PIPE_SOIL_CEMENT, sand
+    ) == pytest.approx(100.0)
+    assert skin_friction_intensity(
+        ConstructionMethod.INNER_DIGGING, sand
+    ) == pytest.approx(30.0)
+
+
 def test_skin_friction_clay_without_c_uses_10n():
     clay = SoilLayer(
         soil_type=SoilType.CLAY, thickness=1.0, n_value=4.0,
