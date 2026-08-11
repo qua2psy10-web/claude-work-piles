@@ -104,10 +104,14 @@ def test_f_specs_pinned():
     assert st.F_SPECS["打込み(打撃)"]["粘性土"] == (1.0, "c")
     assert st.F_MAX["打込み(打撃)"]["粘性土"] == 150.0
 
+    # 場所打ち杭は提供解説資料と完全一致(砂 5N≦200、粘 c または 10N≦150)
     assert st.F_SPECS["場所打ち"]["砂質土"] == (5.0, "N")
-    assert st.F_MAX["場所打ち"]["砂質土"] == 200.0  # 要確認: 150 の可能性
+    assert st.F_MAX["場所打ち"]["砂質土"] == 200.0
     assert st.F_SPECS["場所打ち"]["粘性土"] == (1.0, "c")
     assert st.F_MAX["場所打ち"]["粘性土"] == 150.0
+    # 上限に達する N 値(砂質土: 5N=200 → N=40)
+    assert st.F_MAX["場所打ち"]["砂質土"] / st.F_SPECS["場所打ち"]["砂質土"][0] == 40.0
+    assert st.MIN_N_FOR_CLAY_FRICTION_FROM_N == 5.0
 
     for method in ("中掘り", "プレボーリング"):
         assert st.F_SPECS[method]["砂質土"] == (3.0, "N")

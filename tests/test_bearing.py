@@ -124,11 +124,46 @@ def test_soil_cement_keeps_separate_values():
 
 
 def test_skin_friction_clay_without_c_uses_10n():
+    """N ≧ 5 の粘性土で c が未入力なら 10N を用いる。"""
     clay = SoilLayer(
-        soil_type=SoilType.CLAY, thickness=1.0, n_value=4.0,
+        soil_type=SoilType.CLAY, thickness=1.0, n_value=8.0,
         gamma_t=16.0, gamma_sat=16.5,
     )
-    assert skin_friction_intensity(ConstructionMethod.CAST_IN_PLACE, clay) == 40.0
+    assert skin_friction_intensity(ConstructionMethod.CAST_IN_PLACE, clay) == 80.0
+    # 10N は上限150で頭打ち(N=15以上)
+    stiff = clay.model_copy(update={"n_value": 20.0})
+    assert skin_friction_intensity(ConstructionMethod.CAST_IN_PLACE, stiff) == 150.0
+
+
+def test_soft_clay_requires_cohesion_input():
+    """N < 5 の軟弱粘性土では N 値による推定を行わない(道示Ⅳ の注記)。"""
+    soft = SoilLayer(
+        name="Ac", soil_type=SoilType.CLAY, thickness=1.0, n_value=4.0,
+        gamma_t=16.0, gamma_sat=16.5,
+    )
+    with pytest.raises(ValueError, match="軟弱粘性土"):
+        skin_friction_intensity(ConstructionMethod.CAST_IN_PLACE, soft)
+
+    # c を入力すれば計算できる(上限150は適用)
+    with_c = soft.model_copy(update={"cohesion": 40.0})
+    assert skin_friction_intensity(ConstructionMethod.CAST_IN_PLACE, with_c) == 40.0
+    stiff_c = soft.model_copy(update={"cohesion": 180.0})
+    assert skin_friction_intensity(ConstructionMethod.CAST_IN_PLACE, stiff_c) == 150.0
+
+
+def test_cast_in_place_f_reference_examples():
+    """提供解説資料の数値例と突合する(場所打ち杭)。"""
+    sand = SoilLayer(
+        soil_type=SoilType.SAND, thickness=1.0, n_value=20.0,
+        gamma_t=19.0, gamma_sat=20.0,
+    )
+    m = ConstructionMethod.CAST_IN_PLACE
+    # 砂質土 N=20 → 5N=100(上限未満)
+    assert skin_friction_intensity(m, sand) == 100.0
+    # 砂質土 N=50 → 5N=250 → 200 で頭打ち
+    assert skin_friction_intensity(m, sand.model_copy(update={"n_value": 50.0})) == 200.0
+    # 砂質土 N=40 でちょうど上限
+    assert skin_friction_intensity(m, sand.model_copy(update={"n_value": 40.0})) == 200.0
 
 
 def test_bearing_capacity_hand_calculation():

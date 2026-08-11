@@ -50,22 +50,23 @@ LAYER_COLUMNS = {
     "D50(mm)": "d50",
     "D10(mm)": "d10",
     "沖積層": "is_alluvial",
+    "c(kN/m2)": "cohesion",
 }
 
 DEFAULT_LAYERS = pd.DataFrame(
     [
         {"層名": "B", "土質": "砂質土", "層厚(m)": 2.0, "N値": 5.0,
          "γt(kN/m3)": 17.0, "γsat(kN/m3)": 18.0, "FC(%)": 15.0, "IP": None,
-         "D50(mm)": 0.35, "D10(mm)": 0.05, "沖積層": True},
+         "D50(mm)": 0.35, "D10(mm)": 0.05, "沖積層": True, "c(kN/m2)": None},
         {"層名": "As1", "土質": "砂質土", "層厚(m)": 6.0, "N値": 10.0,
          "γt(kN/m3)": 18.0, "γsat(kN/m3)": 19.0, "FC(%)": 5.0, "IP": None,
-         "D50(mm)": 0.30, "D10(mm)": 0.08, "沖積層": True},
+         "D50(mm)": 0.30, "D10(mm)": 0.08, "沖積層": True, "c(kN/m2)": None},
         {"層名": "Ac1", "土質": "粘性土", "層厚(m)": 5.0, "N値": 4.0,
          "γt(kN/m3)": 16.0, "γsat(kN/m3)": 16.5, "FC(%)": 80.0, "IP": 30.0,
-         "D50(mm)": None, "D10(mm)": None, "沖積層": True},
+         "D50(mm)": None, "D10(mm)": None, "沖積層": True, "c(kN/m2)": 40.0},
         {"層名": "Ds1", "土質": "砂質土", "層厚(m)": 12.0, "N値": 35.0,
          "γt(kN/m3)": 19.0, "γsat(kN/m3)": 20.0, "FC(%)": 8.0, "IP": None,
-         "D50(mm)": 0.50, "D10(mm)": 0.10, "沖積層": False},
+         "D50(mm)": 0.50, "D10(mm)": 0.10, "沖積層": False, "c(kN/m2)": None},
     ]
 )
 
@@ -108,6 +109,7 @@ def layers_from_df(df: pd.DataFrame) -> list[SoilLayer]:
                 d50=_opt(row.get("D50(mm)")),
                 d10=_opt(row.get("D10(mm)")),
                 is_alluvial=bool(row.get("沖積層", True)),
+                cohesion=_opt(row.get("c(kN/m2)")),
             )
         )
     return layers
@@ -129,6 +131,7 @@ def df_from_layers(layers: list[SoilLayer]) -> pd.DataFrame:
                 "D50(mm)": layer.d50,
                 "D10(mm)": layer.d10,
                 "沖積層": layer.is_alluvial,
+                "c(kN/m2)": layer.cohesion,
             }
         )
     return pd.DataFrame(rows)

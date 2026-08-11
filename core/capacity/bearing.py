@@ -28,6 +28,7 @@ from core.standards import (
     F_MAX,
     F_SPECS,
     GAMMA_W,
+    MIN_N_FOR_CLAY_FRICTION_FROM_N,
     QD_MAX,
     QD_SPECS,
     SAFETY_FACTORS_PULL,
@@ -128,7 +129,17 @@ def tip_resistance_intensity(
 def skin_friction_intensity(
     method: ConstructionMethod, layer: SoilLayer
 ) -> float:
-    """最大周面摩擦力度 f (kN/m2)(道示Ⅳ 表-12.4.2 と推定)。"""
+    """最大周面摩擦力度 f (kN/m2)(道示Ⅳ 表-12.4.2 と推定)。
+
+    粘性土は「c または 10N」であり、両者を加算するものではない。
+    c が入力されていればそれを、無ければ 10N を用いる。
+
+    Raises
+    ------
+    ValueError
+        N < 5 の軟弱粘性土層で粘着力 c が未入力の場合。この範囲では
+        N 値による推定の信頼性が乏しく、道示は N 値式を用いないとしている。
+    """
     spec = F_SPECS[_method_key(method)]
     key = layer.soil_type.value
     coef, kind = spec[key]
@@ -136,7 +147,14 @@ def skin_friction_intensity(
         f = coef * layer.n_value
     else:  # "c"
         if layer.cohesion is None:
-            # c が未入力の場合は c = 10N の目安を用いる(道示Ⅳ 12.4.1 解説)
+            if layer.n_value < MIN_N_FOR_CLAY_FRICTION_FROM_N:
+                raise ValueError(
+                    f"層「{layer.name}」は N={layer.n_value:.1f} の軟弱粘性土です。"
+                    f"N < {MIN_N_FOR_CLAY_FRICTION_FROM_N:.0f} では N 値による"
+                    "周面摩擦力度の推定を行わないため、土質試験による粘着力 c を"
+                    "入力してください(道示Ⅳ の注記)"
+                )
+            # c が未入力の場合は c = 10N の目安を用いる
             f = coef * 10.0 * layer.n_value
         else:
             f = coef * layer.cohesion
