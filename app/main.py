@@ -24,6 +24,7 @@ from core.models import (
     SoilProfile,
     SoilType,
     SupportType,
+    TipTreatment,
 )
 from core.report.excel import build_workbook
 from core.report.markdown import build_report
@@ -506,6 +507,21 @@ def main() -> None:
                 ),
                 key=f"pm_{nonce}",
             )
+            tip_treatment = st.selectbox(
+                "先端処理方式(中掘り杭のみ)",
+                [t.value for t in TipTreatment],
+                index=(
+                    [t for t in TipTreatment].index(loaded.pile.tip_treatment)
+                    if loaded and loaded.pile and loaded.pile.tip_treatment
+                    else 1
+                ),
+                key=f"tt_{nonce}",
+                help=(
+                    "最終打撃方式は打込み杭、コンクリート打設方式は場所打ち杭の"
+                    "qd を準用する。セメントミルク噴出攪拌方式は砂層150N/"
+                    "砂れき層200N"
+                ),
+            )
             support_type = st.selectbox(
                 "支持形式", [s.value for s in SupportType],
                 index=(
@@ -705,6 +721,11 @@ def main() -> None:
         length=length,
         wall_thickness=thickness if thickness > 0 else None,
         support_type=SupportType(support_type),
+        tip_treatment=(
+            TipTreatment(tip_treatment)
+            if ConstructionMethod(method) == ConstructionMethod.INNER_DIGGING
+            else None
+        ),
     )
     arrangement_spec = PileArrangement(
         nx=int(nx), ny=int(ny), spacing_x=spacing, spacing_y=spacing

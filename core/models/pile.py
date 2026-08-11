@@ -5,6 +5,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from core.standards import TipTreatment
+
 
 class PileType(str, Enum):
     STEEL_PIPE = "鋼管杭"
@@ -47,6 +49,10 @@ class PileSpec(BaseModel):
     )
     support_type: SupportType = Field(
         default=SupportType.END_BEARING, description="支持形式(安全率が異なる)"
+    )
+    tip_treatment: TipTreatment | None = Field(
+        default=None,
+        description="中掘り杭の先端処理方式(qd の算定法が変わる)。他工法では未使用",
     )
 
 

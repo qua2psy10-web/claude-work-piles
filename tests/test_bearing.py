@@ -17,6 +17,7 @@ from core.models import (
     SoilProfile,
     SoilType,
     SupportType,
+    TipTreatment,
 )
 
 
@@ -45,10 +46,79 @@ def profile_two_layers() -> SoilProfile:
     )
 
 
-def test_qd_cast_in_place_sand_is_constant():
+def test_qd_cast_in_place_sand_needs_n30():
+    """場所打ち杭の砂層は N ≧ 30 で 3,000。N < 30 は支持層条件を満たさない。"""
     layer = profile_two_layers().layers[1]
-    qd = tip_resistance_intensity(ConstructionMethod.CAST_IN_PLACE, layer, 40.0)
-    assert qd == 3000.0
+    m = ConstructionMethod.CAST_IN_PLACE
+    assert tip_resistance_intensity(m, layer, 40.0) == 3000.0
+    assert tip_resistance_intensity(m, layer, 30.0) == 3000.0
+    assert tip_resistance_intensity(m, layer, 60.0) == 3000.0  # 砂層は5,000にならない
+    with pytest.raises(ValueError, match="N ≧ 30"):
+        tip_resistance_intensity(m, layer, 29.0)
+
+
+def test_qd_cast_in_place_gravel_has_two_steps():
+    """良質な砂れき層(N ≧ 50)は 5,000、N ≧ 30 は 3,000。"""
+    gravel = SoilLayer(
+        soil_type=SoilType.GRAVEL, thickness=5.0, n_value=50.0,
+        gamma_t=20.0, gamma_sat=21.0, d50=5.0,
+    )
+    m = ConstructionMethod.CAST_IN_PLACE
+    assert tip_resistance_intensity(m, gravel, 60.0) == 5000.0
+    assert tip_resistance_intensity(m, gravel, 50.0) == 5000.0
+    assert tip_resistance_intensity(m, gravel, 49.0) == 3000.0
+    assert tip_resistance_intensity(m, gravel, 30.0) == 3000.0
+    with pytest.raises(ValueError, match="N ≧ 30"):
+        tip_resistance_intensity(m, gravel, 20.0)
+
+
+def test_qd_inner_digging_by_tip_treatment():
+    """中掘り杭は先端処理方式により qd の算定法が変わる(道示Ⅳ)。"""
+    sand = profile_two_layers().layers[1]  # 砂質土
+    gravel = SoilLayer(
+        soil_type=SoilType.GRAVEL, thickness=5.0, n_value=40.0,
+        gamma_t=20.0, gamma_sat=21.0, d50=5.0,
+    )
+    m = ConstructionMethod.INNER_DIGGING
+
+    # セメントミルク噴出攪拌方式: 砂層 150N(≦7,500)、砂れき層 200N(≦10,000)
+    cm = TipTreatment.CEMENT_MILK
+    assert tip_resistance_intensity(m, sand, 40.0, cm) == 6000.0
+    assert tip_resistance_intensity(m, sand, 60.0, cm) == 7500.0  # 上限
+    assert tip_resistance_intensity(m, gravel, 40.0, cm) == 8000.0
+    assert tip_resistance_intensity(m, gravel, 60.0, cm) == 10000.0  # 上限
+    # 省略時はセメントミルク方式
+    assert tip_resistance_intensity(m, sand, 40.0) == 6000.0
+
+    # 最終打撃方式: 打込み杭の算定法(130N ≦ 6,500)
+    fd = TipTreatment.FINAL_DRIVING
+    assert tip_resistance_intensity(m, sand, 40.0, fd) == 5200.0
+    assert tip_resistance_intensity(m, sand, 60.0, fd) == 6500.0
+
+    # コンクリート打設方式: 場所打ち杭の値
+    cc = TipTreatment.CONCRETE
+    assert tip_resistance_intensity(m, sand, 40.0, cc) == 3000.0
+    assert tip_resistance_intensity(m, gravel, 60.0, cc) == 5000.0
+
+
+def test_qd_method_key_resolution():
+    from core.capacity.bearing import qd_method_key
+
+    assert qd_method_key(ConstructionMethod.CAST_IN_PLACE) == "場所打ち"
+    assert qd_method_key(ConstructionMethod.DRIVEN) == "打込み(打撃)"
+    assert (
+        qd_method_key(ConstructionMethod.INNER_DIGGING, TipTreatment.FINAL_DRIVING)
+        == "打込み(打撃)"
+    )
+    assert (
+        qd_method_key(ConstructionMethod.INNER_DIGGING, TipTreatment.CONCRETE)
+        == "場所打ち"
+    )
+    # 中掘り以外では先端処理方式は無視される
+    assert (
+        qd_method_key(ConstructionMethod.CAST_IN_PLACE, TipTreatment.FINAL_DRIVING)
+        == "場所打ち"
+    )
 
 
 def test_qd_driven_proportional_to_n_with_cap():

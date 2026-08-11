@@ -7,6 +7,7 @@ from core.models.pile import (
     PileType,
     SupportType,
 )
+from core.standards import TipTreatment
 from core.models.project import DesignProject, SeismicConditions
 from core.models.soil import SoilLayer, SoilProfile, SoilType
 
@@ -24,4 +25,5 @@ __all__ = [
     "SoilProfile",
     "SoilType",
     "SupportType",
+    "TipTreatment",
 ]

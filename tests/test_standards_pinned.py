@@ -63,7 +63,6 @@ def test_all_methods_have_capacity_specs():
     methods = set(st.KV_A_COEF)
     assert set(st.QD_SPECS) == methods
     assert set(st.F_SPECS) == methods
-    assert set(st.QD_MAX) == methods
     assert set(st.F_MAX) == methods
     for method in methods:
         # 周面摩擦力度は3土質すべてに定義が必要
@@ -71,26 +70,50 @@ def test_all_methods_have_capacity_specs():
         assert set(st.F_MAX[method]) == {"砂質土", "礫質土", "粘性土"}
         # 先端支持力度は支持層になり得る土質のみ
         assert st.QD_SPECS[method]
-        assert set(st.QD_MAX[method]) <= set(st.QD_SPECS[method])
+        for spec in st.QD_SPECS[method].values():
+            assert spec.kind in {"N", "qu", "steps"}
+            if spec.kind == "steps":
+                # 閾値は降順に並んでいること(高い区分から判定するため)
+                thresholds = [t for t, _ in spec.steps]
+                assert thresholds == sorted(thresholds, reverse=True)
+            else:
+                assert spec.coef > 0
 
 
-def test_qd_specs():
-    assert st.QD_SPECS["打込み(打撃)"]["砂質土"] == (130.0, "N")
-    assert st.QD_SPECS["場所打ち"]["砂質土"] == (3000.0, "const")
-    assert st.QD_SPECS["場所打ち"]["粘性土"] == (3.0, "qu")
-    assert st.QD_SPECS["中掘り"]["砂質土"] == (200.0, "N")
+def test_qd_specs_driven_and_cast_in_place():
+    assert st.QD_SPECS["打込み(打撃)"]["砂質土"] == st.QdSpec(
+        "N", coef=130.0, cap=6500.0
+    )
+    # 場所打ち杭: 砂層 N≧30 で 3,000、良質な砂れき層 N≧50 で 5,000
+    assert st.QD_SPECS["場所打ち"]["砂質土"].steps == ((30.0, 3000.0),)
+    assert st.QD_SPECS["場所打ち"]["礫質土"].steps == (
+        (50.0, 5000.0),
+        (30.0, 3000.0),
+    )
+    assert st.QD_SPECS["場所打ち"]["粘性土"] == st.QdSpec("qu", coef=3.0, cap=3000.0)
     # 場所打ち杭は砂質土・礫質土・粘性土を支持層にできる
     assert set(st.QD_SPECS["場所打ち"]) == {"砂質土", "礫質土", "粘性土"}
     # 打込み杭は粘性土を支持層としない
     assert "粘性土" not in st.QD_SPECS["打込み(打撃)"]
 
 
-def test_qd_max_pinned():
-    """要確認: 中掘り・プレボーリングは 10,000 の可能性(VERIFICATION.md 参照)。"""
-    assert st.QD_MAX["打込み(打撃)"]["砂質土"] == 6500.0
-    assert st.QD_MAX["場所打ち"]["粘性土"] == 3000.0
-    assert st.QD_MAX["中掘り"]["砂質土"] == 12000.0
-    assert st.QD_MAX["プレボーリング"]["砂質土"] == 12000.0
+def test_qd_specs_inner_digging():
+    """中掘り杭(セメントミルク噴出攪拌方式): 砂層 150N≦7,500、砂れき 200N≦10,000。"""
+    assert st.QD_SPECS["中掘り"]["砂質土"] == st.QdSpec("N", coef=150.0, cap=7500.0)
+    assert st.QD_SPECS["中掘り"]["礫質土"] == st.QdSpec("N", coef=200.0, cap=10000.0)
+
+
+def test_tip_treatment_sources():
+    """先端処理方式ごとに qd の算定に用いる工法。"""
+    assert st.TIP_TREATMENT_QD_SOURCE == {
+        st.TipTreatment.FINAL_DRIVING: "打込み(打撃)",
+        st.TipTreatment.CEMENT_MILK: "中掘り",
+        st.TipTreatment.CONCRETE: "場所打ち",
+    }
+    assert set(st.TIP_TREATMENT_QD_SOURCE) == set(st.TipTreatment)
+    # 参照先はすべて QD_SPECS に定義されていること
+    for source in st.TIP_TREATMENT_QD_SOURCE.values():
+        assert source in st.QD_SPECS
 
 
 def test_f_specs_pinned():

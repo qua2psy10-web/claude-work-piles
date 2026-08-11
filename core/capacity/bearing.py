@@ -29,10 +29,11 @@ from core.standards import (
     F_SPECS,
     GAMMA_W,
     MIN_N_FOR_CLAY_FRICTION_FROM_N,
-    QD_MAX,
     QD_SPECS,
     SAFETY_FACTORS_PULL,
     SAFETY_FACTORS_PUSH,
+    TIP_TREATMENT_QD_SOURCE,
+    TipTreatment,
 )
 
 
@@ -99,31 +100,64 @@ def _method_key(method: ConstructionMethod) -> str:
     return method.value
 
 
-def tip_resistance_intensity(
-    method: ConstructionMethod, layer: SoilLayer, n_tip: float
-) -> float:
-    """杭先端の極限支持力度 qd (kN/m2)(道示Ⅳ 表-12.4.2 と推定)。
+def qd_method_key(
+    method: ConstructionMethod, tip_treatment: TipTreatment | None = None
+) -> str:
+    """qd の算定に用いる工法キーを返す。
 
-    ``n_tip`` は杭先端付近の平均N値。
+    中掘り杭工法は先端処理方式により算定法が変わる(道示Ⅳ):
+      最終打撃方式        → 打込み杭の算定法
+      セメントミルク噴出攪拌方式 → 中掘り杭の値
+      コンクリート打設方式  → 場所打ち杭の値
     """
-    spec = QD_SPECS[_method_key(method)]
+    if method == ConstructionMethod.INNER_DIGGING:
+        treatment = tip_treatment or TipTreatment.CEMENT_MILK
+        return TIP_TREATMENT_QD_SOURCE[treatment]
+    return method.value
+
+
+def tip_resistance_intensity(
+    method: ConstructionMethod,
+    layer: SoilLayer,
+    n_tip: float,
+    tip_treatment: TipTreatment | None = None,
+) -> float:
+    """杭先端の極限支持力度 qd (kN/m2)(道示Ⅳ)。
+
+    ``n_tip`` は杭先端付近の平均N値。``tip_treatment`` は中掘り杭の
+    先端処理方式(省略時はセメントミルク噴出攪拌方式)。
+    """
+    key_method = qd_method_key(method, tip_treatment)
+    spec_by_soil = QD_SPECS[key_method]
     key = layer.soil_type.value
-    if key not in spec:
+    if key not in spec_by_soil:
+        # 支持層として想定していない土質は明示的にエラーとする
         raise ValueError(
             f"{method.value}では{layer.soil_type.value}を支持層にできません"
         )
-        # 支持層として想定していない土質は明示的にエラーとする
-    coef, kind = spec[key]
-    if kind == "N":
-        qd = coef * n_tip
-    elif kind == "qu":
+    spec = spec_by_soil[key]
+
+    if spec.kind == "N":
+        qd = spec.coef * n_tip
+    elif spec.kind == "qu":
         if layer.cohesion is None:
             raise ValueError(f"層「{layer.name}」の粘着力 c が未入力です")
-        qd = coef * (2.0 * layer.cohesion)  # qu = 2c
-    else:  # "const"
-        qd = coef
-    limit = QD_MAX[_method_key(method)].get(key)
-    return min(qd, limit) if limit is not None else qd
+        qd = spec.coef * (2.0 * layer.cohesion)  # qu = 2c
+    elif spec.kind == "steps":
+        for threshold, value in spec.steps:
+            if n_tip >= threshold:
+                qd = value
+                break
+        else:
+            minimum = min(t for t, _ in spec.steps)
+            raise ValueError(
+                f"層「{layer.name}」は N={n_tip:.1f} で、{key_method}杭の"
+                f"{key}支持層に必要な N ≧ {minimum:.0f} を満たしません"
+            )
+    else:  # pragma: no cover - 定義ミス時のみ
+        raise ValueError(f"未知の qd 種別: {spec.kind}")
+
+    return min(qd, spec.cap) if spec.cap is not None else qd
 
 
 def skin_friction_intensity(
@@ -222,7 +256,9 @@ def compute_bearing_capacity(
     n_value_tip = (
         average_n_near_tip(profile, tip_depth, d) if n_tip is None else n_tip
     )
-    qd = tip_resistance_intensity(pile.method, tip_layer, n_value_tip)
+    qd = tip_resistance_intensity(
+        pile.method, tip_layer, n_value_tip, pile.tip_treatment
+    )
 
     # 周面摩擦を計上する下端(先端から 1D 手前で打ち切る)
     skin_bottom = tip_depth - d if exclude_tip_zone else tip_depth
