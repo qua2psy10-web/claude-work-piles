@@ -23,6 +23,7 @@ from core.models import (
     SoilLayer,
     SoilProfile,
     SoilType,
+    SupportType,
 )
 from core.report.excel import build_workbook
 from core.report.markdown import build_report
@@ -176,6 +177,7 @@ def _render_stability(report: StabilityReport) -> None:
         c2.metric("先端支持力 qd·A", f"{bc.tip_resistance:,.0f} kN")
         c3.metric("周面摩擦力 U·ΣLf", f"{bc.skin_resistance:,.0f} kN")
         st.caption(
+            f"支持形式: {bc.support_type.value}、"
             f"先端付近の平均N値(±1D) = {bc.n_tip:.1f}、"
             f"qd = {bc.qd:,.0f} kN/m², Ap = {bc.tip_area:.4f} m², "
             f"W = {bc.w_pile:,.0f} kN, Ws = {bc.w_soil:,.0f} kN"
@@ -470,6 +472,18 @@ def main() -> None:
                 ),
                 key=f"pm_{nonce}",
             )
+            support_type = st.selectbox(
+                "支持形式", [s.value for s in SupportType],
+                index=(
+                    [s for s in SupportType].index(loaded.pile.support_type)
+                    if loaded and loaded.pile else 0
+                ),
+                key=f"sup_{nonce}",
+                help=(
+                    "押込みの安全率が異なる(常時: 支持杭3・摩擦杭4、"
+                    "短期: 支持杭2・摩擦杭3)"
+                ),
+            )
         with col2:
             diameter = st.number_input(
                 "杭径 (m)", 0.1, 5.0,
@@ -656,6 +670,7 @@ def main() -> None:
         diameter=diameter,
         length=length,
         wall_thickness=thickness if thickness > 0 else None,
+        support_type=SupportType(support_type),
     )
     arrangement_spec = PileArrangement(
         nx=int(nx), ny=int(ny), spacing_x=spacing, spacing_y=spacing

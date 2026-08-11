@@ -7,7 +7,7 @@ from __future__ import annotations
 from core.analysis.stability import CaseResult, StabilityReport
 from core.models.project import DesignProject
 from core.soil.liquefaction import LiquefactionAssessment
-from core.standards import NF_SAFETY_FACTOR, SAFETY_FACTORS
+from core.standards import NF_SAFETY_FACTOR
 
 
 def _table(header: list[str], rows: list[list[str]]) -> str:
@@ -222,16 +222,19 @@ def _bearing_section(report: StabilityReport) -> str:
         f"- 杭の有効重量 W = {_num(bc.w_pile, 0)} kN、"
         f"置換土の有効重量 Ws = {_num(bc.w_soil, 0)} kN\n"
     )
+    s.append(
+        f"\n支持形式: **{bc.support_type.value}**"
+        "(押込みの安全率が支持形式により異なる)\n"
+    )
     s.append("\nRa =(1/n)(Ru − Ws)+ Ws − W、Pa =(1/n)・Ruf + W\n\n")
     rows = []
     for case in report.cases:
-        n_push, n_pull = SAFETY_FACTORS[case.loads.case.value]
         rows.append(
             [
                 case.loads.case.value,
-                _num(n_push, 1),
+                _num(bc.safety_factor_push(case.loads.case), 1),
                 _num(bc.allowable_push(case.loads.case), 0),
-                _num(n_pull, 1),
+                _num(bc.safety_factor_pull(case.loads.case), 1),
                 _num(bc.allowable_pull(case.loads.case), 0),
             ]
         )

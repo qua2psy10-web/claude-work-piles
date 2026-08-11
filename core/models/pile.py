@@ -26,6 +26,17 @@ class ConstructionMethod(str, Enum):
     ROTARY = "回転"
 
 
+class SupportType(str, Enum):
+    """杭の支持形式(道示Ⅳ 12.4)。押込み支持力の安全率が異なる。
+
+    支持杭: 先端が良質な支持層に貫入している杭
+    摩擦杭: 荷重の大部分を杭周面の摩擦抵抗で支持する杭
+    """
+
+    END_BEARING = "支持杭"
+    FRICTION = "摩擦杭"
+
+
 class PileSpec(BaseModel):
     pile_type: PileType
     method: ConstructionMethod
@@ -33,6 +44,9 @@ class PileSpec(BaseModel):
     length: float = Field(gt=0, description="杭長 (m)")
     wall_thickness: float | None = Field(
         default=None, gt=0, description="鋼管の板厚 (mm)。鋼管系杭のみ"
+    )
+    support_type: SupportType = Field(
+        default=SupportType.END_BEARING, description="支持形式(安全率が異なる)"
     )
 
 

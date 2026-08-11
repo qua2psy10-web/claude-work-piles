@@ -13,12 +13,31 @@ import pytest
 from core import standards as st
 
 
-def test_safety_factors():
-    assert st.SAFETY_FACTORS == {
-        "常時": (3.0, 6.0),
-        "暴風時": (2.0, 3.0),
-        "レベル1地震時": (2.0, 3.0),
+def test_safety_factors_push():
+    """押込みの安全率(道示Ⅳ 表-12.4.1)。支持杭・摩擦杭で異なる。"""
+    assert st.SAFETY_FACTORS_PUSH == {
+        "常時": {"支持杭": 3.0, "摩擦杭": 4.0},
+        "暴風時": {"支持杭": 2.0, "摩擦杭": 3.0},
+        "レベル1地震時": {"支持杭": 2.0, "摩擦杭": 3.0},
     }
+
+
+def test_safety_factors_pull():
+    """引抜きの安全率(道示Ⅳ 表-12.4.3)。押込み(支持杭)の2倍。"""
+    assert st.SAFETY_FACTORS_PULL == {
+        "常時": 6.0,
+        "暴風時": 3.0,
+        "レベル1地震時": 3.0,
+    }
+    # 引抜きは押込みより厳しい安全率を用いる
+    for case, n_pull in st.SAFETY_FACTORS_PULL.items():
+        for n_push in st.SAFETY_FACTORS_PUSH[case].values():
+            assert n_pull >= n_push
+
+
+def test_friction_pile_is_stricter_than_end_bearing():
+    for case, factors in st.SAFETY_FACTORS_PUSH.items():
+        assert factors["摩擦杭"] > factors["支持杭"], case
 
 
 def test_kv_coefficients():
@@ -246,4 +265,5 @@ def test_rebar_tables_share_grades():
 
 def test_stress_increase_matches_safety_factor_cases():
     """許容応力度の割増と支持力の安全率は同じ荷重ケースを扱うこと。"""
-    assert set(st.STRESS_INCREASE) == set(st.SAFETY_FACTORS)
+    assert set(st.STRESS_INCREASE) == set(st.SAFETY_FACTORS_PUSH)
+    assert set(st.STRESS_INCREASE) == set(st.SAFETY_FACTORS_PULL)

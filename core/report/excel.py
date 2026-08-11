@@ -14,7 +14,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 from core.analysis.stability import StabilityReport
 from core.models.project import DesignProject
 from core.soil.liquefaction import LiquefactionAssessment
-from core.standards import NF_SAFETY_FACTOR, SAFETY_FACTORS
+from core.standards import NF_SAFETY_FACTOR
 
 HEADER_FILL = PatternFill("solid", fgColor="DDDDDD")
 NG_FILL = PatternFill("solid", fgColor="FFC7CE")
@@ -200,10 +200,13 @@ def _sheet_bearing(ws: Worksheet, report: StabilityReport) -> None:
         row,
         ["項目", "値", "単位"],
         [
+            ["支持形式", bc.support_type.value, "—"],
+            ["先端付近の平均N値(±1D)", round(bc.n_tip, 1), "—"],
             ["先端支持力度 qd", round(bc.qd, 1), "kN/m²"],
             ["先端面積 Ap", round(bc.tip_area, 4), "m²"],
             ["先端支持力 qd·Ap", round(bc.tip_resistance, 1), "kN"],
             ["周面摩擦力 U·ΣLf", round(bc.skin_resistance, 1), "kN"],
+            ["周面摩擦の計上下端", round(bc.skin_bottom_depth, 2), "m"],
             ["極限支持力 Ru", round(bc.ru, 1), "kN"],
             ["杭の有効重量 W", round(bc.w_pile, 1), "kN"],
             ["置換土の有効重量 Ws", round(bc.w_soil, 1), "kN"],
@@ -225,9 +228,9 @@ def _sheet_bearing(ws: Worksheet, report: StabilityReport) -> None:
         [
             [
                 case.loads.case.value,
-                SAFETY_FACTORS[case.loads.case.value][0],
+                bc.safety_factor_push(case.loads.case),
                 round(bc.allowable_push(case.loads.case), 1),
-                SAFETY_FACTORS[case.loads.case.value][1],
+                bc.safety_factor_pull(case.loads.case),
                 round(bc.allowable_pull(case.loads.case), 1),
             ]
             for case in report.cases

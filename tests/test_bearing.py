@@ -16,6 +16,7 @@ from core.models import (
     SoilLayer,
     SoilProfile,
     SoilType,
+    SupportType,
 )
 
 
@@ -249,16 +250,47 @@ def test_allowable_capacity_safety_factors():
         length=18.0,
     )
     bc = compute_bearing_capacity(pile, profile_two_layers(), embedment=2.0)
+    assert bc.support_type == SupportType.END_BEARING
     ra_normal = bc.allowable_push(LoadCase.PERMANENT)
     ra_eq = bc.allowable_push(LoadCase.LEVEL1_EQ)
     # 地震時は安全率が小さいぶん許容値が大きい
     assert ra_eq > ra_normal
-    # Ra = (Ru - Ws)/n + Ws - W
+    # Ra = (Ru - Ws)/n + Ws - W、支持杭の常時は n = 3
+    assert bc.safety_factor_push(LoadCase.PERMANENT) == 3.0
     expected = (bc.ru - bc.w_soil) / 3.0 + bc.w_soil - bc.w_pile
     assert ra_normal == pytest.approx(expected)
-    # 引抜きは周面摩擦のみ
+    # 引抜きは周面摩擦のみ、常時は n = 6
+    assert bc.safety_factor_pull(LoadCase.PERMANENT) == 6.0
     assert bc.allowable_pull(LoadCase.PERMANENT) == pytest.approx(
         bc.skin_resistance / 6.0 + bc.w_pile
+    )
+
+
+def test_friction_pile_uses_stricter_safety_factor():
+    """摩擦杭は押込みの安全率が大きく、許容支持力が小さくなる。"""
+    profile = profile_two_layers()
+    common = dict(
+        pile_type=PileType.CAST_IN_PLACE,
+        method=ConstructionMethod.CAST_IN_PLACE,
+        diameter=1.0,
+        length=18.0,
+    )
+    end_bearing = compute_bearing_capacity(
+        PileSpec(**common, support_type=SupportType.END_BEARING), profile, 2.0
+    )
+    friction = compute_bearing_capacity(
+        PileSpec(**common, support_type=SupportType.FRICTION), profile, 2.0
+    )
+    # 極限支持力は同じ、安全率だけが変わる
+    assert friction.ru == pytest.approx(end_bearing.ru)
+    assert friction.safety_factor_push(LoadCase.PERMANENT) == 4.0
+    assert friction.safety_factor_push(LoadCase.LEVEL1_EQ) == 3.0
+    assert friction.allowable_push(LoadCase.PERMANENT) < end_bearing.allowable_push(
+        LoadCase.PERMANENT
+    )
+    # 引抜きは支持形式によらない
+    assert friction.allowable_pull(LoadCase.PERMANENT) == pytest.approx(
+        end_bearing.allowable_pull(LoadCase.PERMANENT)
     )
 
 

@@ -7,13 +7,13 @@
 許容引抜き力:
     Pa = (1/n)・Ruf + W        (Ruf は周面摩擦力のみ)
 
-    n : 安全率(道示Ⅳ 表-12.4.2)
+    n : 安全率(道示Ⅳ 表-12.4.1: 押込み / 表-12.4.3: 引抜き)
     W : 杭および杭内部の土の有効重量
     Ws: 杭で置換される部分の土の有効重量
 
 .. warning::
    qd・f の推定式(:mod:`core.standards` の ``QD_SPECS`` / ``F_SPECS``)は
-   道示Ⅳ 表-12.4.1 の値を実装しているが、**実務適用前に原典との照合が必要**。
+   道示Ⅳ 表-12.4.2(推定)の値を実装しているが、**実務適用前に原典との照合が必要**。
    詳細は ``docs/VERIFICATION.md`` を参照。
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ import math
 from dataclasses import dataclass, field
 
 from core.models.loads import LoadCase
-from core.models.pile import ConstructionMethod, PileSpec
+from core.models.pile import ConstructionMethod, PileSpec, SupportType
 from core.models.soil import SoilLayer, SoilProfile, SoilType
 from core.standards import (
     F_MAX,
@@ -30,7 +30,8 @@ from core.standards import (
     GAMMA_W,
     QD_MAX,
     QD_SPECS,
-    SAFETY_FACTORS,
+    SAFETY_FACTORS_PULL,
+    SAFETY_FACTORS_PUSH,
 )
 
 
@@ -60,10 +61,19 @@ class BearingCapacity:
     n_tip: float = 0.0  # qd の算定に用いた先端付近の平均N値
     skin_bottom_depth: float = 0.0  # 周面摩擦を計上した下端深度 (m)
     tip_zone_excluded: bool = True  # 先端 1D 区間を除外したか
+    support_type: SupportType = SupportType.END_BEARING  # 支持形式(安全率に影響)
+
+    def safety_factor_push(self, case: LoadCase) -> float:
+        """押込みの安全率 n(支持形式により異なる)。"""
+        return SAFETY_FACTORS_PUSH[case.value][self.support_type.value]
+
+    def safety_factor_pull(self, case: LoadCase) -> float:
+        """引抜きの安全率 n。"""
+        return SAFETY_FACTORS_PULL[case.value]
 
     def allowable_push(self, case: LoadCase) -> float:
         """許容押込み支持力 Ra (kN)"""
-        n = SAFETY_FACTORS[case.value][0]
+        n = self.safety_factor_push(case)
         return (self.ru - self.w_soil) / n + self.w_soil - self.w_pile
 
     def allowable_pull(self, case: LoadCase) -> float:
@@ -77,9 +87,10 @@ class BearingCapacity:
 
         .. note::
            フーチング上の土の重量も引抜きに抵抗する側として評価できるが、
-           本実装では算入していない(安全側)。
+           本実装では算入していない(安全側)。また群杭のブロック破壊は
+           照査していない。
         """
-        n = SAFETY_FACTORS[case.value][1]
+        n = self.safety_factor_pull(case)
         return self.skin_resistance / n + self.w_pile
 
 
@@ -90,7 +101,7 @@ def _method_key(method: ConstructionMethod) -> str:
 def tip_resistance_intensity(
     method: ConstructionMethod, layer: SoilLayer, n_tip: float
 ) -> float:
-    """杭先端の極限支持力度 qd (kN/m2)(道示Ⅳ 表-12.4.1)。
+    """杭先端の極限支持力度 qd (kN/m2)(道示Ⅳ 表-12.4.2 と推定)。
 
     ``n_tip`` は杭先端付近の平均N値。
     """
@@ -117,7 +128,7 @@ def tip_resistance_intensity(
 def skin_friction_intensity(
     method: ConstructionMethod, layer: SoilLayer
 ) -> float:
-    """最大周面摩擦力度 f (kN/m2)(道示Ⅳ 表-12.4.1)。"""
+    """最大周面摩擦力度 f (kN/m2)(道示Ⅳ 表-12.4.2 と推定)。"""
     spec = F_SPECS[_method_key(method)]
     key = layer.soil_type.value
     coef, kind = spec[key]
@@ -235,6 +246,7 @@ def compute_bearing_capacity(
         n_tip=n_value_tip,
         skin_bottom_depth=skin_bottom,
         tip_zone_excluded=exclude_tip_zone,
+        support_type=pile.support_type,
     )
 
 
