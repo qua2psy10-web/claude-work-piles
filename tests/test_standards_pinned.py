@@ -97,10 +97,41 @@ def test_qd_specs_driven_and_cast_in_place():
     assert "粘性土" not in st.QD_SPECS["打込み(打撃)"]
 
 
-def test_qd_specs_inner_digging():
-    """中掘り杭(セメントミルク噴出攪拌方式): 砂層 150N≦7,500、砂れき 200N≦10,000。"""
-    assert st.QD_SPECS["中掘り"]["砂質土"] == st.QdSpec("N", coef=150.0, cap=7500.0)
-    assert st.QD_SPECS["中掘り"]["礫質土"] == st.QdSpec("N", coef=200.0, cap=10000.0)
+def test_qd_specs_embedded_methods():
+    """中掘り(セメントミルク)・プレボーリング・鋼管ソイルセメントは同値。
+
+    砂層 150N(≦7,500)、砂れき層 200N(≦10,000)。
+    """
+    for method in ("中掘り", "プレボーリング", "鋼管ソイルセメント"):
+        assert st.QD_SPECS[method]["砂質土"] == st.QdSpec(
+            "N", coef=150.0, cap=7500.0
+        ), method
+        assert st.QD_SPECS[method]["礫質土"] == st.QdSpec(
+            "N", coef=200.0, cap=10000.0
+        ), method
+
+
+def test_qd_specs_rotary_by_wing_ratio():
+    """回転杭は羽根外径比(1.5 / 2.0)により qd が異なる。"""
+    assert st.QD_SPECS_ROTARY == {
+        1.5: {
+            "砂質土": st.QdSpec("N", coef=120.0, cap=6000.0),
+            "礫質土": st.QdSpec("N", coef=130.0, cap=6500.0),
+        },
+        2.0: {
+            "砂質土": st.QdSpec("N", coef=100.0, cap=5000.0),
+            "礫質土": st.QdSpec("N", coef=115.0, cap=5750.0),
+        },
+    }
+    assert st.DEFAULT_WING_RATIO == 1.5
+    assert st.DEFAULT_WING_RATIO in st.QD_SPECS_ROTARY
+    # 羽根が大きいほど qd は小さい(単位面積あたりの支持力度)
+    for soil in ("砂質土", "礫質土"):
+        assert (
+            st.QD_SPECS_ROTARY[2.0][soil].coef < st.QD_SPECS_ROTARY[1.5][soil].coef
+        )
+    # QD_SPECS["回転"] は既定(1.5倍)と一致していること
+    assert st.QD_SPECS["回転"] == st.QD_SPECS_ROTARY[st.DEFAULT_WING_RATIO]
 
 
 def test_tip_treatment_sources():

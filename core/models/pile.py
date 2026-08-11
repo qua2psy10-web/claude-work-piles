@@ -54,6 +54,16 @@ class PileSpec(BaseModel):
         default=None,
         description="中掘り杭の先端処理方式(qd の算定法が変わる)。他工法では未使用",
     )
+    wing_ratio: float | None = Field(
+        default=None,
+        gt=0,
+        description="回転杭の羽根外径/杭径(1.5 または 2.0)。qd と先端面積が変わる",
+    )
+    soil_cement_diameter: float | None = Field(
+        default=None,
+        gt=0,
+        description="鋼管ソイルセメント杭のソイルセメント柱径 (m)。先端面積に用いる",
+    )
 
 
 class PileArrangement(BaseModel):

@@ -101,6 +101,99 @@ def test_qd_inner_digging_by_tip_treatment():
     assert tip_resistance_intensity(m, gravel, 60.0, cc) == 5000.0
 
 
+def test_qd_preboring_and_soil_cement():
+    """プレボーリング杭・鋼管ソイルセメント杭は砂層150N(≦7,500)・砂れき200N(≦10,000)。"""
+    sand = profile_two_layers().layers[1]
+    gravel = SoilLayer(
+        soil_type=SoilType.GRAVEL, thickness=5.0, n_value=40.0,
+        gamma_t=20.0, gamma_sat=21.0, d50=5.0,
+    )
+    for m in (
+        ConstructionMethod.PREBORING,
+        ConstructionMethod.STEEL_PIPE_SOIL_CEMENT,
+    ):
+        assert tip_resistance_intensity(m, sand, 40.0) == 6000.0
+        assert tip_resistance_intensity(m, sand, 60.0) == 7500.0
+        assert tip_resistance_intensity(m, gravel, 40.0) == 8000.0
+        assert tip_resistance_intensity(m, gravel, 60.0) == 10000.0
+
+
+def test_qd_rotary_depends_on_wing_ratio():
+    """回転杭は羽根外径比により qd が異なる。"""
+    sand = profile_two_layers().layers[1]
+    gravel = SoilLayer(
+        soil_type=SoilType.GRAVEL, thickness=5.0, n_value=40.0,
+        gamma_t=20.0, gamma_sat=21.0, d50=5.0,
+    )
+    m = ConstructionMethod.ROTARY
+    # 1.5倍: 砂層 120N(≦6,000)、砂れき層 130N(≦6,500)
+    assert tip_resistance_intensity(m, sand, 40.0, wing_ratio=1.5) == 4800.0
+    assert tip_resistance_intensity(m, sand, 60.0, wing_ratio=1.5) == 6000.0
+    assert tip_resistance_intensity(m, gravel, 40.0, wing_ratio=1.5) == 5200.0
+    assert tip_resistance_intensity(m, gravel, 60.0, wing_ratio=1.5) == 6500.0
+    # 2.0倍: 砂層 100N(≦5,000)、砂れき層 115N(≦5,750)
+    assert tip_resistance_intensity(m, sand, 40.0, wing_ratio=2.0) == 4000.0
+    assert tip_resistance_intensity(m, sand, 60.0, wing_ratio=2.0) == 5000.0
+    assert tip_resistance_intensity(m, gravel, 40.0, wing_ratio=2.0) == 4600.0
+    assert tip_resistance_intensity(m, gravel, 60.0, wing_ratio=2.0) == 5750.0
+    # 省略時は 1.5 倍
+    assert tip_resistance_intensity(m, sand, 40.0) == 4800.0
+    # 未対応の比はエラー
+    with pytest.raises(ValueError, match="羽根外径比"):
+        tip_resistance_intensity(m, sand, 40.0, wing_ratio=1.2)
+
+
+def test_tip_area_depends_on_method():
+    """先端面積 A は工法により基準径が異なる(道示Ⅳ)。"""
+    from core.capacity.bearing import tip_area
+
+    base = dict(diameter=1.0, length=18.0)
+    # 通常は杭径
+    cip = PileSpec(
+        pile_type=PileType.CAST_IN_PLACE,
+        method=ConstructionMethod.CAST_IN_PLACE, **base,
+    )
+    assert tip_area(cip) == pytest.approx(math.pi / 4)
+
+    # 回転杭は先端羽根の投影面積 Aw(羽根外径 = 比 × 杭径)
+    rotary15 = PileSpec(
+        pile_type=PileType.STEEL_PIPE, method=ConstructionMethod.ROTARY,
+        wall_thickness=12.0, wing_ratio=1.5, **base,
+    )
+    assert tip_area(rotary15) == pytest.approx(math.pi * 1.5**2 / 4)
+    rotary20 = rotary15.model_copy(update={"wing_ratio": 2.0})
+    assert tip_area(rotary20) == pytest.approx(math.pi * 2.0**2 / 4)
+    # 羽根の分だけ杭径の面積より大きい
+    assert tip_area(rotary15) > tip_area(cip)
+
+    # 鋼管ソイルセメント杭はソイルセメント柱の断面積
+    sc = PileSpec(
+        pile_type=PileType.STEEL_PIPE_SOIL_CEMENT,
+        method=ConstructionMethod.STEEL_PIPE_SOIL_CEMENT,
+        wall_thickness=12.0, soil_cement_diameter=1.4, **base,
+    )
+    assert tip_area(sc) == pytest.approx(math.pi * 1.4**2 / 4)
+    # 柱径未入力はエラー
+    with pytest.raises(ValueError, match="ソイルセメント柱径"):
+        tip_area(sc.model_copy(update={"soil_cement_diameter": None}))
+
+
+def test_soil_cement_uses_column_diameter_for_perimeter():
+    """鋼管ソイルセメント杭は周長もソイルセメント柱径による。"""
+    profile = profile_two_layers()
+    sc = PileSpec(
+        pile_type=PileType.STEEL_PIPE_SOIL_CEMENT,
+        method=ConstructionMethod.STEEL_PIPE_SOIL_CEMENT,
+        diameter=1.0, length=18.0, wall_thickness=12.0,
+        soil_cement_diameter=1.4,
+    )
+    bc = compute_bearing_capacity(sc, profile, embedment=2.0)
+    assert bc.tip_area == pytest.approx(math.pi * 1.4**2 / 4)
+    # 周長 π×1.4 を用いていること(1層目の力から逆算)
+    seg = bc.skin_segments[0]
+    assert seg.force == pytest.approx(math.pi * 1.4 * seg.length * seg.f)
+
+
 def test_qd_method_key_resolution():
     from core.capacity.bearing import qd_method_key
 

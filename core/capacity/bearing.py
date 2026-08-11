@@ -22,14 +22,17 @@ import math
 from dataclasses import dataclass, field
 
 from core.models.loads import LoadCase
-from core.models.pile import ConstructionMethod, PileSpec, SupportType
+from core.models.pile import ConstructionMethod, PileSpec, PileType, SupportType
 from core.models.soil import SoilLayer, SoilProfile, SoilType
 from core.standards import (
+    DEFAULT_WING_RATIO,
     F_MAX,
     F_SPECS,
     GAMMA_W,
     MIN_N_FOR_CLAY_FRICTION_FROM_N,
     QD_SPECS,
+    QD_SPECS_ROTARY,
+    QdSpec,
     SAFETY_FACTORS_PULL,
     SAFETY_FACTORS_PUSH,
     TIP_TREATMENT_QD_SOURCE,
@@ -116,26 +119,71 @@ def qd_method_key(
     return method.value
 
 
+def tip_area(pile: PileSpec) -> float:
+    """極限支持力式 Ru = qd・A + … に用いる杭先端面積 A (m2)(道示Ⅳ)。
+
+    工法により基準とする径が異なる:
+
+    * 鋼管ソイルセメント杭 — **ソイルセメント柱**の断面積(鋼管断面ではない)
+    * 回転杭 — **先端羽根の投影面積 Aw**(羽根外径 = wing_ratio × 杭径)
+    * その他 — 杭径による円の面積
+    """
+    if pile.pile_type == PileType.STEEL_PIPE_SOIL_CEMENT or (
+        pile.method == ConstructionMethod.STEEL_PIPE_SOIL_CEMENT
+    ):
+        if pile.soil_cement_diameter is None:
+            raise ValueError(
+                "鋼管ソイルセメント杭の先端面積にはソイルセメント柱径 "
+                "(soil_cement_diameter)の入力が必要です"
+            )
+        diameter = pile.soil_cement_diameter
+    elif pile.method == ConstructionMethod.ROTARY:
+        ratio = pile.wing_ratio or DEFAULT_WING_RATIO
+        diameter = ratio * pile.diameter
+    else:
+        diameter = pile.diameter
+    return math.pi * diameter**2 / 4.0
+
+
+def qd_spec_for_soil(
+    method: ConstructionMethod,
+    soil_type_value: str,
+    tip_treatment: TipTreatment | None = None,
+    wing_ratio: float | None = None,
+) -> QdSpec | None:
+    """工法・土質に対応する qd の算定仕様を返す。無ければ None。"""
+    if method == ConstructionMethod.ROTARY:
+        ratio = wing_ratio or DEFAULT_WING_RATIO
+        if ratio not in QD_SPECS_ROTARY:
+            raise ValueError(
+                f"回転杭の羽根外径比 {ratio} は未対応です。"
+                f"対応値: {sorted(QD_SPECS_ROTARY)}"
+            )
+        return QD_SPECS_ROTARY[ratio].get(soil_type_value)
+    return QD_SPECS[qd_method_key(method, tip_treatment)].get(soil_type_value)
+
+
 def tip_resistance_intensity(
     method: ConstructionMethod,
     layer: SoilLayer,
     n_tip: float,
     tip_treatment: TipTreatment | None = None,
+    wing_ratio: float | None = None,
 ) -> float:
     """杭先端の極限支持力度 qd (kN/m2)(道示Ⅳ)。
 
     ``n_tip`` は杭先端付近の平均N値。``tip_treatment`` は中掘り杭の
-    先端処理方式(省略時はセメントミルク噴出攪拌方式)。
+    先端処理方式(省略時はセメントミルク噴出攪拌方式)、``wing_ratio`` は
+    回転杭の羽根外径比(省略時は 1.5)。
     """
     key_method = qd_method_key(method, tip_treatment)
-    spec_by_soil = QD_SPECS[key_method]
     key = layer.soil_type.value
-    if key not in spec_by_soil:
+    spec = qd_spec_for_soil(method, key, tip_treatment, wing_ratio)
+    if spec is None:
         # 支持層として想定していない土質は明示的にエラーとする
         raise ValueError(
             f"{method.value}では{layer.soil_type.value}を支持層にできません"
         )
-    spec = spec_by_soil[key]
 
     if spec.kind == "N":
         qd = spec.coef * n_tip
@@ -250,14 +298,23 @@ def compute_bearing_capacity(
             f"{profile.total_depth:.1f} m を超えています"
         )
 
-    area = math.pi * d**2 / 4.0
-    perimeter = math.pi * d
+    # 先端面積は工法により基準径が異なる(鋼管ソイルセメント杭・回転杭)
+    area = tip_area(pile)
+    # 周面摩擦の対象となる杭周長。鋼管ソイルセメント杭は地盤と接するのが
+    # ソイルセメント柱であるため、その径を用いる(原典未確認、物理的整合による)。
+    shaft_diameter = (
+        pile.soil_cement_diameter
+        if pile.method == ConstructionMethod.STEEL_PIPE_SOIL_CEMENT
+        and pile.soil_cement_diameter is not None
+        else d
+    )
+    perimeter = math.pi * shaft_diameter
     tip_layer = profile.layer_at(tip_depth)
     n_value_tip = (
         average_n_near_tip(profile, tip_depth, d) if n_tip is None else n_tip
     )
     qd = tip_resistance_intensity(
-        pile.method, tip_layer, n_value_tip, pile.tip_treatment
+        pile.method, tip_layer, n_value_tip, pile.tip_treatment, pile.wing_ratio
     )
 
     # 周面摩擦を計上する下端(先端から 1D 手前で打ち切る)

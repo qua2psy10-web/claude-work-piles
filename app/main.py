@@ -545,6 +545,27 @@ def main() -> None:
                 value=(loaded.pile.length if loaded and loaded.pile else 20.0),
                 step=0.5, key=f"pl_{nonce}",
             )
+            wing_ratio = st.selectbox(
+                "羽根外径/杭径(回転杭のみ)",
+                [1.5, 2.0],
+                index=(
+                    [1.5, 2.0].index(loaded.pile.wing_ratio)
+                    if loaded and loaded.pile and loaded.pile.wing_ratio in (1.5, 2.0)
+                    else 0
+                ),
+                key=f"wr_{nonce}",
+                help="qd と先端面積 Aw が変わる(1.5倍: 砂層120N、2.0倍: 砂層100N)",
+            )
+            sc_diameter = st.number_input(
+                "ソイルセメント柱径 (m)", 0.0, 5.0,
+                value=(
+                    loaded.pile.soil_cement_diameter
+                    if loaded and loaded.pile and loaded.pile.soil_cement_diameter
+                    else 1.4
+                ),
+                step=0.1, key=f"scd_{nonce}",
+                help="鋼管ソイルセメント杭のみ。先端面積・周長にこの径を用いる",
+            )
             thickness = st.number_input(
                 "板厚 (mm)", 0.0, 100.0,
                 value=(
@@ -724,6 +745,17 @@ def main() -> None:
         tip_treatment=(
             TipTreatment(tip_treatment)
             if ConstructionMethod(method) == ConstructionMethod.INNER_DIGGING
+            else None
+        ),
+        wing_ratio=(
+            float(wing_ratio)
+            if ConstructionMethod(method) == ConstructionMethod.ROTARY
+            else None
+        ),
+        soil_cement_diameter=(
+            sc_diameter
+            if ConstructionMethod(method) == ConstructionMethod.STEEL_PIPE_SOIL_CEMENT
+            and sc_diameter > 0
             else None
         ),
     )
