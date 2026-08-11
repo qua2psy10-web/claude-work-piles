@@ -15,6 +15,7 @@ from core.standards import (
     CIP_CONCRETE_REDUCTION,
     E_REBAR,
     EC_CONCRETE,
+    REMOVED_REBAR_GRADES,
     SIGMA_A_STEEL,
     SIGMA_CA_CONCRETE,
     SIGMA_SA_REBAR,
@@ -117,6 +118,17 @@ def _check_cast_in_place(
     )
     # 場所打ち杭は水中施工を考慮してコンクリートの許容応力度を低減する
     sigma_ca = SIGMA_CA_CONCRETE[material.fck] * CIP_CONCRETE_REDUCTION * increase
+    if material.rebar_grade in REMOVED_REBAR_GRADES:
+        raise ValueError(
+            f"{material.rebar_grade} は H24 の道示Ⅳ下部構造編で鉄筋の種類から"
+            "削除されており、許容引張応力度が規定されていません。"
+            f"対応材質: {sorted(SIGMA_SA_REBAR)}"
+        )
+    if material.rebar_grade not in SIGMA_SA_REBAR:
+        raise ValueError(
+            f"鉄筋材質 {material.rebar_grade} は未対応です。"
+            f"対応材質: {sorted(SIGMA_SA_REBAR)}"
+        )
     sigma_sa = SIGMA_SA_REBAR[material.rebar_grade] * increase
     checks = [
         StressCheck("コンクリート圧縮応力度", detail.sigma_c, sigma_ca),

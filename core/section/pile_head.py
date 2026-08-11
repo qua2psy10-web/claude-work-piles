@@ -143,14 +143,20 @@ def check_pile_head(
        抵抗は杭頭補強鉄筋・仮想RC断面が担うが、いずれも未実装のため。
     """
     if fck not in TAU_A_PUNCHING:
-        raise ValueError(f"σck={fck} は未対応です")
+        raise ValueError(
+            f"σck={fck} は許容押抜きせん断応力度 τa3 の表(道示Ⅳ 表4.2.1、"
+            f"σck = {sorted(TAU_A_PUNCHING)})の範囲外です。"
+            "適用する設計条件・発注者基準を別途確認してください"
+        )
     increase = STRESS_INCREASE[case.value]
     area = punching_shear_area(pile_diameter, footing_height, embedment)
     pile_area = math.pi * pile_diameter**2 / 4.0
 
-    # 押込み力に対する押抜きせん断(引抜き時も絶対値で照査)
+    # 押込み力に対する押抜きせん断(引抜き時も絶対値で照査)。
+    # 杭頭結合部では水平力・曲げモーメントが同時に作用し得るため、
+    # 荷重の組合せによる τa3 の割増しは行わない(地震時も表の値のまま)。
     tau = abs(axial) / area / 1000.0  # kN/m2 → N/mm2
-    tau_a = TAU_A_PUNCHING[fck] * increase
+    tau_a = TAU_A_PUNCHING[fck]
 
     # 押込み力に対する支圧。コンクリートの許容支圧応力度は拘束効果により
     # 曲げ圧縮より大きく採れるが、安全側に σca を用いる。
@@ -161,6 +167,9 @@ def check_pile_head(
         StressCheck("杭頭押抜きせん断応力度", tau, tau_a),
         StressCheck("杭頭支圧応力度", sigma_bearing, sigma_ba),
     ]
+    # .. note::
+    #    支圧については割増しの扱いが原典で未確認のため、通常どおり
+    #    荷重ケース別の割増しを適用している(押抜きせん断のみ割増しなし)。
     edge = (
         edge_distances(footing, arrangement, pile_diameter)
         if footing is not None and arrangement is not None

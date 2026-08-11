@@ -634,7 +634,11 @@ def main() -> None:
             )
         with mcol2:
             rebar_grade = st.selectbox(
-                "鉄筋材質", list(SIGMA_SA_REBAR), index=1, key=f"rg_{nonce}"
+                "鉄筋材質", list(SIGMA_SA_REBAR), index=0, key=f"rg_{nonce}",
+                help=(
+                    "SD295・SR235 は H24 の道示Ⅳ下部構造編で鉄筋の種類から"
+                    "削除されたため選択できません"
+                ),
             )
             steel_grade = st.selectbox(
                 "鋼材材質", list(SIGMA_A_STEEL), index=0, key=f"sg_{nonce}"

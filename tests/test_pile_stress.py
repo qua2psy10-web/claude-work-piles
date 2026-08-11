@@ -187,6 +187,52 @@ def test_pile_head_checks():
     assert bearing.allowable == pytest.approx(8.0)
 
 
+def test_punching_shear_allowable_is_not_increased():
+    """杭頭結合部の τa3 には荷重組合せによる割増しを行わない(道示Ⅳ 4.2)。"""
+    allowables = {}
+    for case in (LoadCase.PERMANENT, LoadCase.STORM, LoadCase.LEVEL1_EQ):
+        result = check_pile_head(1.0, 1.5, 24, case, 2000.0, 200.0, 150.0)
+        tau = next(c for c in result.checks if "押抜き" in c.name)
+        allowables[case] = tau.allowable
+    # 地震時・暴風時も常時と同じ 0.90
+    for case, allowable in allowables.items():
+        assert allowable == pytest.approx(0.90), case
+
+    # 一方、支圧は通常どおり割増しされる(原典未確認のため現状の扱い)
+    normal = check_pile_head(1.0, 1.5, 24, LoadCase.PERMANENT, 2000.0, 0.0, 0.0)
+    seismic = check_pile_head(1.0, 1.5, 24, LoadCase.LEVEL1_EQ, 2000.0, 0.0, 0.0)
+    n_b = next(c for c in normal.checks if "支圧" in c.name)
+    s_b = next(c for c in seismic.checks if "支圧" in c.name)
+    assert s_b.allowable == pytest.approx(n_b.allowable * 1.5)
+
+
+def test_punching_shear_rejects_grade_outside_table():
+    """τa3 の表は σck = 21〜30 のみ。範囲外は明示的にエラー。"""
+    with pytest.raises(ValueError, match="範囲外"):
+        check_pile_head(1.0, 1.5, 40, LoadCase.PERMANENT, 2000.0, 0.0, 0.0)
+
+
+def test_removed_rebar_grade_is_rejected():
+    """SD295 は H24 の道示Ⅳで削除されており選択できない。"""
+    material = MaterialSpec(
+        fck=24,
+        rebar_grade="SD295",
+        rebar=RebarLayout(count=24, diameter_mm=25.0, cover_mm=125.0),
+    )
+    with pytest.raises(ValueError, match="削除"):
+        check_section(CIP, material, LoadCase.PERMANENT, 0.0, 1500.0, 800.0)
+
+
+def test_unknown_rebar_grade_is_rejected():
+    material = MaterialSpec(
+        fck=24,
+        rebar_grade="SD490",
+        rebar=RebarLayout(count=24, diameter_mm=25.0, cover_mm=125.0),
+    )
+    with pytest.raises(ValueError, match="未対応"):
+        check_section(CIP, material, LoadCase.PERMANENT, 0.0, 1500.0, 800.0)
+
+
 def test_pile_head_bearing_ignores_uplift():
     """支圧は押込み時のみ。引抜き時は 0 とする。"""
     result = check_pile_head(1.0, 1.5, 24, LoadCase.PERMANENT, -2000.0, 0.0, 0.0)

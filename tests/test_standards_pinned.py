@@ -295,15 +295,20 @@ def test_concrete_allowable_stresses():
 
 
 def test_rebar_allowable_stresses():
-    """道示Ⅲ 表-3.2.3。SD345=180 は2ソースで確認済み。
+    """道示Ⅳ 表4.3.1。SD345=180 は2ソースで確認済み。
 
-    SD295 は資料間で 140 / 160 / 180 と食い違うため、最も安全側の 140 を据え置き。
+    SD295・SR235 は H24 改定で下部構造編の表から削除されたため、
+    許容引張応力度が規定されておらず本表には含めない。
     """
-    assert st.SIGMA_SA_REBAR == {"SD295": 140.0, "SD345": 180.0, "SD390": 200.0}
-    assert st.SIGMA_SA_REBAR_SEVERE == {"SD295": 140.0, "SD345": 160.0, "SD390": 180.0}
+    assert st.SIGMA_SA_REBAR == {"SD345": 180.0, "SD390": 200.0}
+    assert st.SIGMA_SA_REBAR_SEVERE == {"SD345": 160.0, "SD390": 180.0}
     # 腐食性環境の許容値は一般の部材以下
     for grade in st.SIGMA_SA_REBAR:
         assert st.SIGMA_SA_REBAR_SEVERE[grade] <= st.SIGMA_SA_REBAR[grade]
+    # 削除された材質は表に含まれない
+    assert "SD295" in st.REMOVED_REBAR_GRADES
+    assert "SR235" in st.REMOVED_REBAR_GRADES
+    assert not (st.REMOVED_REBAR_GRADES & set(st.SIGMA_SA_REBAR))
 
 
 def test_other_allowable_stresses():
@@ -329,9 +334,16 @@ def test_concrete_tables_share_grades():
         st.SIGMA_CAG_CONCRETE,
         st.TAU_A1_CONCRETE,
         st.TAU_A2_CONCRETE,
-        st.TAU_A_PUNCHING,
     ):
         assert set(table) == grades
+
+
+def test_punching_shear_table_covers_21_to_30_only():
+    """τa3(道示Ⅳ 表4.2.1)は σck = 21〜30 のみを規定する。"""
+    assert st.TAU_A_PUNCHING == {21: 0.85, 24: 0.90, 27: 0.95, 30: 1.00}
+    # 40 は表の範囲外(別途、設計条件・発注者基準の確認が必要)
+    assert 40 not in st.TAU_A_PUNCHING
+    assert set(st.TAU_A_PUNCHING) < set(st.EC_CONCRETE)
 
 
 def test_rebar_tables_share_grades():
