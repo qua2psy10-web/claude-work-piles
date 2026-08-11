@@ -24,8 +24,17 @@ from core.models import (
     SoilProfile,
     SoilType,
 )
+from core.report.excel import build_workbook
+from core.report.markdown import build_report
+from core.section.checks import MaterialSpec
+from core.section.rc import RebarLayout
 from core.soil.liquefaction import assess_liquefaction
-from core.standards import EC_CONCRETE, GroundType
+from core.standards import (
+    EC_CONCRETE,
+    SIGMA_A_STEEL,
+    SIGMA_SA_REBAR,
+    GroundType,
+)
 
 LAYER_COLUMNS = {
     "層名": "name",
@@ -241,6 +250,117 @@ def _render_stability(report: StabilityReport) -> None:
                 width="stretch",
             )
 
+            _render_section_forces(case)
+            _render_stress_checks(case)
+
+    if report.negative_friction is not None:
+        nf = report.negative_friction
+        with st.expander(
+            f"負の周面摩擦力の検討 — {nf.judgement}", expanded=True
+        ):
+            c1, c2, c3 = st.columns(3)
+            c1.metric("中立点深さ", f"{nf.neutral_depth:.2f} m")
+            c2.metric("NF", f"{nf.nf:,.0f} kN")
+            c3.metric("最大軸力 Nmax", f"{nf.n_max:,.0f} kN")
+            st.caption(
+                f"死荷重軸力 {nf.dead_load:,.0f} kN + NF {nf.nf:,.0f} kN = "
+                f"{nf.n_max:,.0f} kN ≦ Ru/1.2 = {nf.allowable:,.0f} kN "
+                f"(比 {nf.ratio:.3f}) → {nf.judgement}"
+            )
+            if nf.segments:
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {
+                                "層名": s.layer_name,
+                                "区間 (m)": f"{s.depth_top:.2f}〜{s.depth_bottom:.2f}",
+                                "fn (kN/m²)": round(s.fn, 1),
+                                "NF (kN)": round(s.force, 1),
+                            }
+                            for s in nf.segments
+                        ]
+                    ),
+                    width="stretch",
+                )
+
+
+def _render_section_forces(case) -> None:
+    """杭体の断面力分布を図表で表示する。"""
+    if case.forces is None:
+        return
+    peak = case.forces.max_underground_moment
+    st.markdown("**杭体の断面力(Chang の式)**")
+    c1, c2 = st.columns(2)
+    c1.metric("杭頭モーメント", f"{case.critical_pile.moment:,.1f} kN·m")
+    c2.metric(
+        "地中部最大モーメント",
+        f"{peak.moment:,.1f} kN·m",
+        help=f"深さ {peak.depth:.2f} m",
+    )
+    chart = pd.DataFrame(
+        {
+            "深さ (m)": [p.depth for p in case.forces.points],
+            "曲げモーメント (kN·m)": [p.moment for p in case.forces.points],
+            "せん断力 (kN)": [p.shear for p in case.forces.points],
+        }
+    ).set_index("深さ (m)")
+    st.line_chart(chart)
+
+
+def _render_stress_checks(case) -> None:
+    """杭体・杭頭結合部の応力度照査結果を表示する。"""
+    rows = []
+    for label, stress in (
+        ("杭頭", case.stress_head),
+        ("地中部最大曲げ", case.stress_max),
+    ):
+        if stress is None:
+            continue
+        for c in stress.checks:
+            rows.append(
+                {
+                    "位置": f"{label}(深さ {stress.depth:.2f} m)",
+                    "照査項目": c.name,
+                    "応力度 (N/mm²)": round(c.stress, 2),
+                    "許容値 (N/mm²)": round(c.allowable, 2),
+                    "比": round(c.ratio, 3),
+                    "判定": c.judgement,
+                }
+            )
+    if rows:
+        st.markdown("**杭体の応力度照査(道示Ⅳ 12.10)**")
+        st.dataframe(pd.DataFrame(rows), width="stretch")
+        if case.stress_head is not None and case.stress_head.rc_detail is not None:
+            d = case.stress_head.rc_detail
+            st.caption(
+                "杭頭断面: "
+                + (
+                    "全断面圧縮"
+                    if d.fully_compressed
+                    else f"中立軸深さ x = {d.compression_depth:.3f} m"
+                )
+                + f"、σc = {d.sigma_c:.2f} N/mm²、"
+                f"σs(引張) = {d.sigma_s_tension:.1f} N/mm²"
+            )
+
+    if case.pile_head is not None:
+        st.markdown("**杭頭結合部の照査(道示Ⅳ 12.9)**")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "照査項目": c.name,
+                        "応力度 (N/mm²)": round(c.stress, 3),
+                        "許容値 (N/mm²)": round(c.allowable, 3),
+                        "比": round(c.ratio, 3),
+                        "判定": c.judgement,
+                    }
+                    for c in case.pile_head.checks
+                ]
+            ),
+            width="stretch",
+        )
+
 
 def main() -> None:
     st.set_page_config(page_title="杭基礎の設計(H24年道示版)", layout="wide")
@@ -413,11 +533,37 @@ def main() -> None:
                 step=0.5, key=f"fe_{nonce}",
                 help="地表面からフーチング下面(杭頭)までの深さ",
             )
-        fck = st.selectbox(
-            "コンクリート設計基準強度 σck (N/mm²)",
-            sorted(EC_CONCRETE), index=1, key=f"fck_{nonce}",
-            help="場所打ち杭の断面計算に使用",
-        )
+        st.markdown("**材料・配筋**")
+        mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+        with mcol1:
+            fck = st.selectbox(
+                "σck (N/mm²)",
+                sorted(EC_CONCRETE), index=1, key=f"fck_{nonce}",
+                help="場所打ち杭のコンクリート設計基準強度",
+            )
+        with mcol2:
+            rebar_grade = st.selectbox(
+                "鉄筋材質", list(SIGMA_SA_REBAR), index=1, key=f"rg_{nonce}"
+            )
+            steel_grade = st.selectbox(
+                "鋼材材質", list(SIGMA_A_STEEL), index=0, key=f"sg_{nonce}"
+            )
+        with mcol3:
+            rebar_count = st.number_input(
+                "軸方向鉄筋 本数", 4, 200, value=24, key=f"rn_{nonce}"
+            )
+            rebar_dia = st.number_input(
+                "鉄筋径 (mm)", 10.0, 60.0, value=25.0, step=1.0, key=f"rd2_{nonce}"
+            )
+        with mcol4:
+            rebar_cover = st.number_input(
+                "かぶり (mm)", 30.0, 500.0, value=125.0, step=5.0, key=f"rc_{nonce}",
+                help="断面縁から鉄筋中心までの距離",
+            )
+            use_nf = st.checkbox(
+                "負の周面摩擦力を検討", value=False, key=f"nf_{nonce}",
+                help="圧密沈下層(N値10以下の粘性土)を自動判定する",
+            )
 
     with tab_load:
         st.subheader("荷重(フーチング底面中心に作用する値)")
@@ -461,6 +607,7 @@ def main() -> None:
             assessment = assess_liquefaction(
                 profile, GroundType(ground_type), cz1, cz2, pitch=pitch
             )
+            st.session_state.liquefaction = assessment
             col_a, col_b = st.columns(2)
             with col_a:
                 if assessment.liquefiable_type1:
@@ -511,8 +658,19 @@ def main() -> None:
         width_x=fw_x, width_y=fw_y, height=fh, embedment=embedment
     )
 
+    material_spec = MaterialSpec(
+        fck=int(fck),
+        rebar_grade=rebar_grade,
+        steel_grade=steel_grade,
+        rebar=RebarLayout(
+            count=int(rebar_count),
+            diameter_mm=rebar_dia,
+            cover_mm=rebar_cover,
+        ),
+    )
+
     with tab_stab:
-        st.subheader("安定計算(変位法 — 道示Ⅳ(H24) 12.6)")
+        st.subheader("安定計算・断面照査(道示Ⅳ(H24) 12.6、12.9、12.10)")
         st.caption(
             "直杭・杭頭剛結、フーチング剛体を仮定。杭種は場所打ち杭・鋼管杭に対応。"
         )
@@ -527,15 +685,21 @@ def main() -> None:
                     profile,
                     loads_from_df(loads_df),
                     fck=int(fck),
+                    material=material_spec,
+                    check_negative_friction=use_nf,
                 )
             except (ValueError, NotImplementedError, RuntimeError) as exc:
                 st.error(f"計算エラー: {exc}")
             else:
+                st.session_state.report = report
                 _render_stability(report)
+        elif st.session_state.get("report") is not None:
+            _render_stability(st.session_state.report)
 
-    # プロジェクト保存
+    # プロジェクト保存・計算書出力
     with st.sidebar:
         st.divider()
+        project = None
         try:
             project = DesignProject(
                 name=name,
@@ -548,6 +712,7 @@ def main() -> None:
                 footing=footing_spec,
                 loads=loads_from_df(loads_df),
             )
+            st.session_state.project = project
             st.download_button(
                 "プロジェクト保存(JSON)",
                 data=project.model_dump_json(indent=2),
@@ -556,6 +721,32 @@ def main() -> None:
             )
         except Exception as exc:  # noqa: BLE001
             st.warning(f"保存不可(入力エラー): {exc}")
+
+        if project is not None:
+            st.divider()
+            st.caption("計算書")
+            report = st.session_state.get("report")
+            liq = st.session_state.get("liquefaction")
+            if report is None:
+                st.caption("安定計算を実行すると照査結果が計算書に含まれます。")
+            try:
+                st.download_button(
+                    "計算書(Markdown)",
+                    data=build_report(project, report, liq),
+                    file_name=f"{name or 'report'}.md",
+                    mime="text/markdown",
+                )
+                st.download_button(
+                    "計算書(Excel)",
+                    data=build_workbook(project, report, liq),
+                    file_name=f"{name or 'report'}.xlsx",
+                    mime=(
+                        "application/vnd.openxmlformats-officedocument"
+                        ".spreadsheetml.sheet"
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                st.warning(f"計算書を生成できません: {exc}")
 
 
 def _round(value: float | None, ndigits: int = 1) -> float | str:

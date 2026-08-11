@@ -11,13 +11,24 @@ dependencies = [
     "pydantic>=2.5",
     "pandas>=2.0",
     "streamlit>=1.30",
+    "numpy>=1.24",
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
 
 [tool.setuptools]
-packages = ["core", "core.models", "core.soil", "app"]
+packages = [
+    "core",
+    "core.models",
+    "core.soil",
+    "core.capacity",
+    "core.analysis",
+    "core.section",
+    "core.report",
+    "app",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

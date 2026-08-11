@@ -25,8 +25,14 @@ pytest
   - `capacity/bearing.py` — 軸方向支持力(道示Ⅳ(H24) 12.4)
   - `capacity/springs.py` — Kv・kH・杭頭バネ K1〜K4(道示Ⅳ 9.5、12.6)
   - `capacity/section.py` — 杭種別の断面諸元
+  - `capacity/negative_friction.py` — 負の周面摩擦力(道示Ⅳ 12.4.3)
   - `analysis/displacement.py` — 変位法(道示Ⅳ 12.6)
+  - `analysis/section_forces.py` — 杭体の断面力分布(Chang の式)
   - `analysis/stability.py` — 安定計算のオーケストレーションと照査
+  - `section/rc.py` — 円形RC断面の応力度(中立軸の反復計算)
+  - `section/checks.py` — 杭種別の応力度照査(道示Ⅳ 12.10)
+  - `section/pile_head.py` — 杭頭結合部(道示Ⅳ 12.9)
+  - `report/` — 計算書生成(Markdown・Excel)
   - `standards.py` — H24道示の定数テーブル(基準年度別に外部化)
 - `app/` — Streamlit GUI
 - `tests/` — 手計算値との突合テスト、GUIスモークテスト
@@ -35,7 +41,7 @@ pytest
 
 - [x] フェーズ0: データモデル・液状化判定・GUI骨格
 - [x] フェーズ1: 支持力・バネ定数・変位法(場所打ち杭・鋼管杭、常時/L1)
-- [ ] フェーズ2: 杭体断面照査・杭頭結合部・計算書出力
+- [x] フェーズ2: 杭体断面照査・杭頭結合部・負の周面摩擦・計算書出力
 - [ ] フェーズ3: 全7杭種・7工法、暴風時、比較表
 - [ ] フェーズ4: レベル2地震時照査
 - [ ] フェーズ5: 入力チェック強化・製品化

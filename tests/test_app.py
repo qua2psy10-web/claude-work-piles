@@ -42,8 +42,40 @@ def test_stability_button_produces_result():
     assert any("OK" in m or "NG" in m for m in messages)
     # 支持力・杭頭反力の表が出ている
     assert len(at.dataframe) >= 2
-    # kH・β・Kv・変位のメトリクスが出ている
-    assert len(at.metric) >= 4
+    # 支持力3件 + 荷重ケースごとに kH・β・Kv・変位・杭頭M・地中部最大M
+    assert len(at.metric) >= 12
+    labels = [m.label for m in at.metric]
+    assert "地中部最大モーメント" in labels
+    # 応力度照査・杭頭結合部の表が描画されている
+    texts = [m.value for m in at.markdown]
+    assert any("応力度照査" in t for t in texts)
+    assert any("杭頭結合部" in t for t in texts)
+
+
+def test_report_download_buttons_exist():
+    at = run_app()
+    labels = [b.label for b in at.download_button]
+    assert any("プロジェクト保存" in label for label in labels)
+    assert any("Markdown" in label for label in labels)
+    assert any("Excel" in label for label in labels)
+
+
+def test_report_picks_up_analysis_results():
+    """安定計算を実行すると結果がセッションに保持され、計算書に反映される。"""
+    at = run_app()
+    assert "report" not in at.session_state
+
+    next(b for b in at.button if "安定計算" in b.label).click().run()
+    assert not at.exception
+    report = at.session_state["report"]
+    assert report is not None
+    assert len(report.cases) == 2
+
+    from core.report.markdown import build_report
+
+    text = build_report(at.session_state["project"], report)
+    assert "杭の軸方向支持力" in text
+    assert "総合判定" in text
 
 
 def test_default_layers_roundtrip():

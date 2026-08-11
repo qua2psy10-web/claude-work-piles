@@ -3,13 +3,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.analysis.displacement import StabilityResult, solve_stability
+from core.analysis.displacement import PileReaction, StabilityResult, solve_stability
+from core.analysis.section_forces import SectionForceDistribution, distribution
 from core.capacity.bearing import BearingCapacity, compute_bearing_capacity
+from core.capacity.negative_friction import (
+    NegativeFrictionResult,
+    compute_negative_friction,
+)
 from core.capacity.section import pile_section
 from core.capacity.springs import LateralSprings, PileSection, axial_spring, lateral_springs
-from core.models.loads import FootingLoads
+from core.models.loads import FootingLoads, LoadCase
 from core.models.pile import Footing, PileArrangement, PileSpec
 from core.models.soil import SoilProfile
+from core.section.checks import MaterialSpec, PileStressResult, check_section
+from core.section.pile_head import PileHeadResult, check_pile_head
 from core.standards import (
     ALLOWABLE_DISPLACEMENT_DIA_THRESHOLD,
     ALLOWABLE_DISPLACEMENT_MM,
@@ -54,10 +61,22 @@ class CaseResult:
     kv: float
     result: StabilityResult
     checks: list[Check]
+    critical_pile: PileReaction | None = None  # 照査対象とした最大反力の杭
+    forces: SectionForceDistribution | None = None  # 杭体の断面力分布
+    stress_head: PileStressResult | None = None  # 杭頭断面の応力度
+    stress_max: PileStressResult | None = None  # 地中部最大曲げ断面の応力度
+    pile_head: PileHeadResult | None = None  # 杭頭結合部
 
     @property
     def all_ok(self) -> bool:
-        return all(c.ok for c in self.checks)
+        if not all(c.ok for c in self.checks):
+            return False
+        for stress in (self.stress_head, self.stress_max):
+            if stress is not None and not stress.all_ok:
+                return False
+        if self.pile_head is not None and not self.pile_head.all_ok:
+            return False
+        return True
 
 
 @dataclass(frozen=True)
@@ -65,9 +84,12 @@ class StabilityReport:
     section: PileSection
     bearing: BearingCapacity
     cases: list[CaseResult]
+    negative_friction: NegativeFrictionResult | None = None
 
     @property
     def all_ok(self) -> bool:
+        if self.negative_friction is not None and not self.negative_friction.ok:
+            return False
         return all(c.all_ok for c in self.cases)
 
 
@@ -78,8 +100,18 @@ def analyze(
     profile: SoilProfile,
     loads: list[FootingLoads],
     fck: int = 24,
+    material: MaterialSpec | None = None,
+    check_negative_friction: bool = False,
 ) -> StabilityReport:
-    """全荷重ケースについて安定計算と照査を行う。"""
+    """全荷重ケースについて安定計算・断面照査・杭頭結合部の照査を行う。
+
+    Parameters
+    ----------
+    material:
+        杭体の材料条件。省略時は断面照査・杭頭結合部の照査を行わない。
+    check_negative_friction:
+        負の周面摩擦力(NF)を検討するか。常時の杭頭最大軸力を死荷重とみなす。
+    """
     section = pile_section(pile, fck=fck)
     bearing = compute_bearing_capacity(pile, profile, footing.embedment)
     kv = axial_spring(pile, section)
@@ -122,8 +154,60 @@ def analyze(
                     unit="kN",
                 )
             )
+        # 最も厳しい杭(押込み軸力が最大の杭)を代表断面として照査する
+        critical = max(result.reactions, key=lambda r: r.axial)
+        forces = distribution(
+            ei=section.ei,
+            beta=springs.beta,
+            h0=critical.shear,
+            m0=critical.moment,
+            length=pile.length,
+        )
+        stress_head = stress_max = head_result = None
+        if material is not None:
+            stress_head = check_section(
+                pile, material, load.case, 0.0, critical.axial, critical.moment
+            )
+            peak = forces.max_underground_moment
+            stress_max = check_section(
+                pile, material, load.case, peak.depth, critical.axial, peak.moment
+            )
+            head_result = check_pile_head(
+                pile_diameter=pile.diameter,
+                footing_height=footing.height,
+                fck=fck,
+                case=load.case,
+                axial=critical.axial,
+                shear=critical.shear,
+                moment=critical.moment,
+            )
         cases.append(
-            CaseResult(loads=load, springs=springs, kv=kv, result=result, checks=checks)
+            CaseResult(
+                loads=load,
+                springs=springs,
+                kv=kv,
+                result=result,
+                checks=checks,
+                critical_pile=critical,
+                forces=forces,
+                stress_head=stress_head,
+                stress_max=stress_max,
+                pile_head=head_result,
+            )
         )
 
-    return StabilityReport(section=section, bearing=bearing, cases=cases)
+    nf = None
+    if check_negative_friction:
+        permanent = [c for c in cases if c.loads.case == LoadCase.PERMANENT]
+        if not permanent:
+            raise ValueError(
+                "負の周面摩擦力の検討には常時の荷重ケースが必要です"
+            )
+        dead_load = permanent[0].result.max_axial
+        nf = compute_negative_friction(
+            pile, profile, footing.embedment, dead_load, bearing.ru
+        )
+
+    return StabilityReport(
+        section=section, bearing=bearing, cases=cases, negative_friction=nf
+    )
