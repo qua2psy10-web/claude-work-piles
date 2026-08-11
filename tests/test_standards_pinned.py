@@ -147,12 +147,42 @@ def test_kh_constants():
     assert st.ALLOWABLE_DISPLACEMENT_DIA_THRESHOLD == 1.5
 
 
-def test_allowable_stresses():
-    assert st.STRESS_INCREASE == {"常時": 1.0, "暴風時": 1.5, "レベル1地震時": 1.5}
-    assert st.SIGMA_CA_CONCRETE[24] == 8.0
+def test_stress_increase_factors():
+    """割増係数(道示Ⅰ 荷重の組合せ)。
+
+    2026-08-11 に暴風時を 1.5 → 1.25 へ修正
+    (風荷重 1.25 / 地震の影響 1.50 で2ソースが一致)。
+    """
+    assert st.STRESS_INCREASE == {"常時": 1.0, "暴風時": 1.25, "レベル1地震時": 1.50}
+
+
+def test_concrete_allowable_stresses():
+    """道示Ⅲ 表-3.2.1。σck=21〜30 は提供解説資料と完全一致。"""
+    assert st.SIGMA_CA_CONCRETE == {21: 7.0, 24: 8.0, 27: 9.0, 30: 10.0, 40: 13.0}
+    assert st.SIGMA_CAG_CONCRETE == {21: 5.5, 24: 6.5, 27: 7.0, 30: 8.0, 40: 10.0}
+    assert st.TAU_A1_CONCRETE == {21: 0.35, 24: 0.38, 27: 0.40, 30: 0.42, 40: 0.50}
+    assert st.TAU_A2_CONCRETE == {21: 1.6, 24: 1.7, 27: 1.8, 30: 1.9, 40: 2.2}
+    # 軸圧縮は曲げ圧縮より小さい
+    for grade in st.SIGMA_CA_CONCRETE:
+        assert st.SIGMA_CAG_CONCRETE[grade] < st.SIGMA_CA_CONCRETE[grade]
+
+
+def test_rebar_allowable_stresses():
+    """道示Ⅲ 表-3.2.3。SD345=180 は2ソースで確認済み。
+
+    SD295 は資料間で 140 / 160 / 180 と食い違うため、最も安全側の 140 を据え置き。
+    """
+    assert st.SIGMA_SA_REBAR == {"SD295": 140.0, "SD345": 180.0, "SD390": 200.0}
+    assert st.SIGMA_SA_REBAR_SEVERE == {"SD295": 140.0, "SD345": 160.0, "SD390": 180.0}
+    # 腐食性環境の許容値は一般の部材以下
+    for grade in st.SIGMA_SA_REBAR:
+        assert st.SIGMA_SA_REBAR_SEVERE[grade] <= st.SIGMA_SA_REBAR[grade]
+
+
+def test_other_allowable_stresses():
     assert st.CIP_CONCRETE_REDUCTION == 0.8
-    assert st.SIGMA_SA_REBAR["SD345"] == 180.0
     assert st.SIGMA_A_STEEL["SKK400"] == 140.0
+    assert st.SIGMA_A_STEEL["SKK490"] == 185.0
     assert st.TAU_A_PUNCHING[24] == 0.90
     assert st.NF_SAFETY_FACTOR == 1.2
 
@@ -167,8 +197,18 @@ def test_material_constants():
 def test_concrete_tables_share_grades():
     """コンクリート関連の表は同じ σck を網羅していること。"""
     grades = set(st.EC_CONCRETE)
-    assert set(st.SIGMA_CA_CONCRETE) == grades
-    assert set(st.TAU_A_PUNCHING) == grades
+    for table in (
+        st.SIGMA_CA_CONCRETE,
+        st.SIGMA_CAG_CONCRETE,
+        st.TAU_A1_CONCRETE,
+        st.TAU_A2_CONCRETE,
+        st.TAU_A_PUNCHING,
+    ):
+        assert set(table) == grades
+
+
+def test_rebar_tables_share_grades():
+    assert set(st.SIGMA_SA_REBAR) == set(st.SIGMA_SA_REBAR_SEVERE)
 
 
 def test_stress_increase_matches_safety_factor_cases():

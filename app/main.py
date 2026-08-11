@@ -647,7 +647,7 @@ def main() -> None:
                 )
             st.dataframe(pd.DataFrame(rows), width="stretch", height=480)
             st.caption(
-                "σv, σ'v: kN/m²。DE は FL≦1 の層のみ低減(道示Ⅴ 表-8.2.1)。"
+                "σv, σ'v: kN/m²。DE は FL≦1 の層のみ低減(道示Ⅴ 8.2.4)。"
             )
 
     pile_spec = PileSpec(

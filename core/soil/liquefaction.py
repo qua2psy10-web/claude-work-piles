@@ -7,7 +7,7 @@ H24年道示では、液状化の判定はレベル2地震動(タイプI・タ�
   2. FL = R / L の算定(8.2.3)
        R = cw・RL          (動的せん断強度比)
        L = rd・khg・σv/σ'v (地震時せん断応力比)
-  3. FL ≦ 1.0 の層について土質定数の低減係数 DE を決定(8.2.4 表-8.2.1)
+  3. FL ≦ 1.0 の層について土質定数の低減係数 DE を決定(8.2.4)
 """
 from __future__ import annotations
 
@@ -82,7 +82,7 @@ def rd_value(depth: float) -> float:
 
 
 def reduction_factor_de(fl: float, depth: float, r: float) -> float:
-    """土質定数の低減係数 DE(道示Ⅴ(H24) 表-8.2.1)
+    """土質定数の低減係数 DE(道示Ⅴ(H24) 8.2.4)
 
     FL > 1.0(液状化しない)の場合は低減しない(DE = 1.0)。
     """

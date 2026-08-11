@@ -73,6 +73,23 @@ def test_no_tension_when_axial_dominates():
     assert tension.stress == 0.0
 
 
+def test_storm_case_uses_125_not_150():
+    """暴風時の割増は 1.25(地震時 1.5 とは異なる)。"""
+    normal = check_section(
+        STEEL, MATERIAL, LoadCase.PERMANENT, depth=0.0, axial=2000.0, moment=300.0
+    )
+    storm = check_section(
+        STEEL, MATERIAL, LoadCase.STORM, depth=0.0, axial=2000.0, moment=300.0
+    )
+    seismic = check_section(
+        STEEL, MATERIAL, LoadCase.LEVEL1_EQ, depth=0.0, axial=2000.0, moment=300.0
+    )
+    base = normal.checks[0].allowable
+    assert storm.checks[0].allowable == pytest.approx(base * 1.25)
+    assert seismic.checks[0].allowable == pytest.approx(base * 1.50)
+    assert storm.checks[0].allowable < seismic.checks[0].allowable
+
+
 def test_seismic_case_increases_allowable():
     normal = check_section(
         STEEL, MATERIAL, LoadCase.PERMANENT, depth=0.0, axial=2000.0, moment=300.0
