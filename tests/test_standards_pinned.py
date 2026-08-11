@@ -8,6 +8,8 @@
 **定数を修正する場合は、本テストの期待値も同時に更新し、
 `docs/VERIFICATION.md` の照合欄に出典を記録すること。**
 """
+import pytest
+
 from core import standards as st
 
 
@@ -134,8 +136,39 @@ def test_de_table_is_complete_and_monotonic():
         for r_idx in range(2):
             values = [st.DE_TABLE[(i, depth_idx, r_idx)] for i in range(3)]
             assert values == sorted(values)
+    # 深いほど、R が大きいほど低減が緩む
+    for fl_idx in range(3):
+        for r_idx in range(2):
+            assert (
+                st.DE_TABLE[(fl_idx, 0, r_idx)] <= st.DE_TABLE[(fl_idx, 1, r_idx)]
+            )
+        for depth_idx in range(2):
+            assert (
+                st.DE_TABLE[(fl_idx, depth_idx, 0)]
+                <= st.DE_TABLE[(fl_idx, depth_idx, 1)]
+            )
     # すべて 0〜1 の範囲
     assert all(0.0 <= v <= 1.0 for v in st.DE_TABLE.values())
+
+
+def test_de_table_values_match_reference():
+    """DE の取り得る値と配置が提供解説資料(道示Ⅴ 表-8.2.4)と一致すること。
+
+    資料は R の区分を持たないため、最も液状化しやすい区分を
+    「0(または 1/6)」と併記している。下記はその R 区分を展開した形。
+    """
+    assert set(st.DE_TABLE.values()) == {0.0, 1 / 6, 1 / 3, 2 / 3, 1.0}
+    # FL 最小・浅い: 0(R≦0.3)/ 1/6(R>0.3)
+    assert st.DE_TABLE[(0, 0, 0)] == 0.0
+    assert st.DE_TABLE[(0, 0, 1)] == pytest.approx(1 / 6)
+    # FL 最小・深い: 1/3
+    assert st.DE_TABLE[(0, 1, 0)] == pytest.approx(1 / 3)
+    # 中間区分・浅い: 1/3、深い: 2/3
+    assert st.DE_TABLE[(1, 0, 0)] == pytest.approx(1 / 3)
+    assert st.DE_TABLE[(1, 1, 0)] == pytest.approx(2 / 3)
+    # FL 最大区分・浅い: 2/3、深い: 1.0
+    assert st.DE_TABLE[(2, 0, 0)] == pytest.approx(2 / 3)
+    assert st.DE_TABLE[(2, 1, 0)] == 1.0
 
 
 def test_kh_constants():
