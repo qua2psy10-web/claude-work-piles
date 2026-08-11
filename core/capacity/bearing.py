@@ -67,7 +67,18 @@ class BearingCapacity:
         return (self.ru - self.w_soil) / n + self.w_soil - self.w_pile
 
     def allowable_pull(self, case: LoadCase) -> float:
-        """許容引抜き力 Pa (kN)"""
+        """許容引抜き力 Pa (kN)。
+
+            Pa =(1/n)・Ruf + W
+
+        Ruf は周面摩擦力のみ(引抜きでは杭先端の地盤抵抗は期待できない)、
+        W は杭の水中有効重量。この式形は提供解説資料の
+        ``Rat =(1/n)× Rtu + Wp`` と一致することを確認済み。
+
+        .. note::
+           フーチング上の土の重量も引抜きに抵抗する側として評価できるが、
+           本実装では算入していない(安全側)。
+        """
         n = SAFETY_FACTORS[case.value][1]
         return self.skin_resistance / n + self.w_pile
 
