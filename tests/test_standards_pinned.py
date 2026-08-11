@@ -1,0 +1,157 @@
+"""基準定数のピン止めテスト。
+
+`core.standards` の定数は道示H24に基づく設計判断そのものであり、
+うっかり変更すると全計算結果が静かに変わる。本テストは現在の値を
+明示的に固定し、変更が「意図的な照合結果の反映」であることを
+コードレビューで確認できるようにするためのもの。
+
+**定数を修正する場合は、本テストの期待値も同時に更新し、
+`docs/VERIFICATION.md` の照合欄に出典を記録すること。**
+"""
+from core import standards as st
+
+
+def test_safety_factors():
+    assert st.SAFETY_FACTORS == {
+        "常時": (3.0, 6.0),
+        "暴風時": (2.0, 3.0),
+        "レベル1地震時": (2.0, 3.0),
+    }
+
+
+def test_kv_coefficients():
+    """Kv の係数 a = slope・(L/D) + intercept(工法別)。
+
+    公開資料で裏付けが取れているもの(docs/VERIFICATION.md 参照):
+      場所打ち        a = 0.031(L/D) − 0.15
+      打込み(打撃)    a = 0.014(L/D) + 0.720
+      バイブロハンマ  a = 0.017(L/D) − 0.014
+    """
+    assert st.KV_A_COEF["場所打ち"] == (0.031, -0.15)
+    assert st.KV_A_COEF["打込み(打撃)"] == (0.014, 0.72)
+    assert st.KV_A_COEF["バイブロハンマ"] == (0.017, -0.014)
+    # 未照合の工法
+    assert st.KV_A_COEF["中掘り"] == (0.010, 0.36)
+    assert st.KV_A_COEF["プレボーリング"] == (0.013, 0.53)
+    assert st.KV_A_COEF["鋼管ソイルセメント"] == (0.040, 0.15)
+    assert st.KV_A_COEF["回転"] == (0.013, 0.54)
+
+
+def test_all_methods_have_capacity_specs():
+    """全工法が qd・f の定義を持つこと(定義漏れの検出)。"""
+    methods = set(st.KV_A_COEF)
+    assert set(st.QD_SPECS) == methods
+    assert set(st.F_SPECS) == methods
+    assert set(st.QD_MAX) == methods
+    assert set(st.F_MAX) == methods
+    for method in methods:
+        # 周面摩擦力度は3土質すべてに定義が必要
+        assert set(st.F_SPECS[method]) == {"砂質土", "礫質土", "粘性土"}
+        assert set(st.F_MAX[method]) == {"砂質土", "礫質土", "粘性土"}
+        # 先端支持力度は支持層になり得る土質のみ
+        assert st.QD_SPECS[method]
+        assert set(st.QD_MAX[method]) <= set(st.QD_SPECS[method])
+
+
+def test_qd_specs():
+    assert st.QD_SPECS["打込み(打撃)"]["砂質土"] == (130.0, "N")
+    assert st.QD_SPECS["場所打ち"]["砂質土"] == (3000.0, "const")
+    assert st.QD_SPECS["場所打ち"]["粘性土"] == (3.0, "qu")
+    assert st.QD_SPECS["中掘り"]["砂質土"] == (200.0, "N")
+    # 場所打ち杭は砂質土・礫質土・粘性土を支持層にできる
+    assert set(st.QD_SPECS["場所打ち"]) == {"砂質土", "礫質土", "粘性土"}
+    # 打込み杭は粘性土を支持層としない
+    assert "粘性土" not in st.QD_SPECS["打込み(打撃)"]
+
+
+def test_qd_max_pinned():
+    """要確認: 中掘り・プレボーリングは 10,000 の可能性(VERIFICATION.md 参照)。"""
+    assert st.QD_MAX["打込み(打撃)"]["砂質土"] == 6500.0
+    assert st.QD_MAX["場所打ち"]["粘性土"] == 3000.0
+    assert st.QD_MAX["中掘り"]["砂質土"] == 12000.0
+    assert st.QD_MAX["プレボーリング"]["砂質土"] == 12000.0
+
+
+def test_f_specs_pinned():
+    """要確認: 中掘り系は砂質土 3N(≦150)・粘性土 c の可能性。"""
+    assert st.F_SPECS["打込み(打撃)"]["砂質土"] == (2.0, "N")
+    assert st.F_MAX["打込み(打撃)"]["砂質土"] == 100.0
+    assert st.F_SPECS["場所打ち"]["砂質土"] == (5.0, "N")
+    assert st.F_MAX["場所打ち"]["砂質土"] == 200.0
+    assert st.F_SPECS["場所打ち"]["粘性土"] == (1.0, "c")
+    assert st.F_MAX["場所打ち"]["粘性土"] == 150.0
+    assert st.F_SPECS["中掘り"]["砂質土"] == (10.0, "N")
+    assert st.F_MAX["中掘り"]["砂質土"] == 200.0
+    assert st.F_SPECS["中掘り"]["粘性土"] == (0.8, "c")
+    assert st.F_MAX["中掘り"]["粘性土"] == 100.0
+
+
+def test_liquefaction_constants():
+    assert st.KHG0_LIQUEFACTION[st.GroundMotionType.LEVEL2_TYPE1] == {
+        st.GroundType.TYPE_I: 0.50,
+        st.GroundType.TYPE_II: 0.45,
+        st.GroundType.TYPE_III: 0.40,
+    }
+    assert st.KHG0_LIQUEFACTION[st.GroundMotionType.LEVEL2_TYPE2] == {
+        st.GroundType.TYPE_I: 0.80,
+        st.GroundType.TYPE_II: 0.70,
+        st.GroundType.TYPE_III: 0.60,
+    }
+    assert st.LIQUEFACTION_MAX_DEPTH == 20.0
+    assert st.LIQUEFACTION_MAX_GWL == 10.0
+    assert st.LIQUEFACTION_MAX_FC == 35.0
+    assert st.LIQUEFACTION_MAX_IP == 15.0
+
+
+def test_de_table_is_complete_and_monotonic():
+    """DE 表は 12 通り(FL3区分×深度2区分×R2区分)すべてが定義されること。"""
+    assert len(st.DE_TABLE) == 12
+    for fl_idx in range(3):
+        for depth_idx in range(2):
+            for r_idx in range(2):
+                assert (fl_idx, depth_idx, r_idx) in st.DE_TABLE
+    # FL が大きいほど(液状化しにくいほど)低減が緩む
+    for depth_idx in range(2):
+        for r_idx in range(2):
+            values = [st.DE_TABLE[(i, depth_idx, r_idx)] for i in range(3)]
+            assert values == sorted(values)
+    # すべて 0〜1 の範囲
+    assert all(0.0 <= v <= 1.0 for v in st.DE_TABLE.values())
+
+
+def test_kh_constants():
+    assert st.E0_FROM_N == 2800.0
+    assert st.ALPHA_KH_NORMAL == 1.0
+    assert st.ALPHA_KH_SEISMIC == 2.0
+    assert st.ALLOWABLE_DISPLACEMENT_MM == 15.0
+    assert st.ALLOWABLE_DISPLACEMENT_RATIO == 0.01
+    assert st.ALLOWABLE_DISPLACEMENT_DIA_THRESHOLD == 1.5
+
+
+def test_allowable_stresses():
+    assert st.STRESS_INCREASE == {"常時": 1.0, "暴風時": 1.5, "レベル1地震時": 1.5}
+    assert st.SIGMA_CA_CONCRETE[24] == 8.0
+    assert st.CIP_CONCRETE_REDUCTION == 0.8
+    assert st.SIGMA_SA_REBAR["SD345"] == 180.0
+    assert st.SIGMA_A_STEEL["SKK400"] == 140.0
+    assert st.TAU_A_PUNCHING[24] == 0.90
+    assert st.NF_SAFETY_FACTOR == 1.2
+
+
+def test_material_constants():
+    assert st.E_STEEL == 2.0e8
+    assert st.E_REBAR == 2.0e8
+    assert st.EC_CONCRETE[24] == 2.5e7
+    assert st.GAMMA_W == 9.8
+
+
+def test_concrete_tables_share_grades():
+    """コンクリート関連の表は同じ σck を網羅していること。"""
+    grades = set(st.EC_CONCRETE)
+    assert set(st.SIGMA_CA_CONCRETE) == grades
+    assert set(st.TAU_A_PUNCHING) == grades
+
+
+def test_stress_increase_matches_safety_factor_cases():
+    """許容応力度の割増と支持力の安全率は同じ荷重ケースを扱うこと。"""
+    assert set(st.STRESS_INCREASE) == set(st.SAFETY_FACTORS)
