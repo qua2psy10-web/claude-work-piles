@@ -9,6 +9,7 @@ import math
 import pandas as pd
 import streamlit as st
 
+from core.analysis.comparison import compare
 from core.analysis.stability import StabilityReport, analyze
 from core.models import (
     ConstructionMethod,
@@ -165,6 +166,50 @@ def df_from_loads(loads: list[FootingLoads]) -> pd.DataFrame:
             }
             for load in loads
         ]
+    )
+
+
+def _render_comparison(rows: list, vertical_load: float, length: float) -> None:
+    """杭種・工法の比較表を表示する。"""
+    available = [r for r in rows if r.ok]
+    if not available:
+        st.error(
+            "算定できる組合せがありませんでした。"
+            "支持層の条件(N値)や杭長を確認してください。"
+        )
+    else:
+        best = min(available, key=lambda r: (r.required_piles, r.diameter))
+        st.success(
+            f"必要本数が最小の組合せ: {best.pile_type.value} / "
+            f"{best.method.value} / φ{best.diameter:.1f}m → "
+            f"{best.required_piles} 本(Ra = {best.allowable_push:,.0f} kN)"
+        )
+    st.caption(f"鉛直力 V = {vertical_load:,.0f} kN、杭長 L = {length:.1f} m")
+
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "杭種": r.pile_type.value,
+                    "工法": r.method.value,
+                    "杭径 (m)": r.diameter,
+                    "先端面積 (m²)": round(r.tip_area, 4) if r.ok else None,
+                    "qd (kN/m²)": round(r.bearing.qd, 0) if r.ok else None,
+                    "Ru (kN)": round(r.ru, 0) if r.ok else None,
+                    "Ra (kN)": round(r.allowable_push, 0) if r.ok else None,
+                    "Pa (kN)": round(r.allowable_pull, 0) if r.ok else None,
+                    "必要本数": r.required_piles,
+                    "備考": r.error or "",
+                }
+                for r in rows
+            ]
+        ),
+        width="stretch",
+        height=520,
+    )
+    st.caption(
+        "Ra: 許容押込み支持力、Pa: 許容引抜き力。「備考」に理由がある行は"
+        "その組合せで算定できないことを示す。"
     )
 
 
@@ -466,8 +511,8 @@ def main() -> None:
             ),
         )
 
-    tab_soil, tab_pile, tab_load, tab_liq, tab_stab = st.tabs(
-        ["地盤", "杭・フーチング", "荷重", "液状化判定", "安定計算"]
+    tab_soil, tab_pile, tab_load, tab_liq, tab_stab, tab_cmp = st.tabs(
+        ["地盤", "杭・フーチング", "荷重", "液状化判定", "安定計算", "杭種比較"]
     )
 
     with tab_soil:
@@ -808,6 +853,51 @@ def main() -> None:
                 _render_stability(report)
         elif st.session_state.get("report") is not None:
             _render_stability(st.session_state.report)
+
+    with tab_cmp:
+        st.subheader("杭種・工法の比較(形式選定の支援)")
+        st.caption(
+            "同じ地盤条件・杭長に対して、杭種×工法×杭径ごとに軸方向支持力と"
+            "必要杭本数を比較する。支持力以外(水平抵抗・杭体応力度・経済性)は"
+            "含まないため、選定は他の要素とあわせて判断すること。"
+        )
+        ccol1, ccol2 = st.columns(2)
+        with ccol1:
+            cmp_diameters = st.multiselect(
+                "比較する杭径 (m)",
+                [0.6, 0.8, 1.0, 1.2, 1.5, 2.0],
+                default=[0.8, 1.0, 1.2],
+                key=f"cmpd_{nonce}",
+            )
+        with ccol2:
+            cmp_case = st.selectbox(
+                "荷重ケース", [c.value for c in LoadCase], index=0,
+                key=f"cmpc_{nonce}",
+            )
+        if profile is None:
+            st.error(f"地層データにエラーがあります: {profile_error}")
+        elif not cmp_diameters:
+            st.info("比較する杭径を1つ以上選択してください。")
+        elif st.button("比較表を作成", type="primary"):
+            loads = loads_from_df(loads_df)
+            target = next(
+                (load for load in loads if load.case.value == cmp_case), None
+            )
+            if target is None:
+                st.error(f"荷重タブに「{cmp_case}」のケースがありません。")
+            else:
+                rows = compare(
+                    profile,
+                    embedment=embedment,
+                    length=length,
+                    diameters=sorted(cmp_diameters),
+                    vertical_load=target.v,
+                    case=LoadCase(cmp_case),
+                    support_type=SupportType(support_type),
+                    tip_treatment=TipTreatment(tip_treatment),
+                    wing_ratio=float(wing_ratio),
+                )
+                _render_comparison(rows, target.v, length)
 
     # プロジェクト保存・計算書出力
     with st.sidebar:

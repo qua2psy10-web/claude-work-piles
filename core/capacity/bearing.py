@@ -128,6 +128,11 @@ def tip_area(pile: PileSpec) -> float:
     * 回転杭 — **先端羽根の投影面積 Aw**(羽根外径 = wing_ratio × 杭径)
     * その他 — 杭径による円の面積
     """
+    if pile.pile_type == PileType.H_STEEL:
+        raise NotImplementedError(
+            "H鋼杭の先端面積・周長は円形断面では表せません"
+            "(H形断面の寸法入力が必要)。未実装です"
+        )
     if pile.pile_type == PileType.STEEL_PIPE_SOIL_CEMENT or (
         pile.method == ConstructionMethod.STEEL_PIPE_SOIL_CEMENT
     ):

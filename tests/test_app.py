@@ -52,6 +52,17 @@ def test_stability_button_produces_result():
     assert any("杭頭結合部" in t for t in texts)
 
 
+def test_comparison_button_produces_table():
+    at = run_app()
+    button = next(b for b in at.button if "比較表" in b.label)
+    button.click().run()
+    assert not at.exception
+    # 最小本数の組合せが提示される
+    assert any("必要本数が最小" in s.value for s in at.success)
+    # H鋼杭など算定できない組合せも行として残る
+    assert len(at.dataframe) >= 1
+
+
 def test_report_download_buttons_exist():
     at = run_app()
     labels = [b.label for b in at.download_button]
