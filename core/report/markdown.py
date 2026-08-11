@@ -343,7 +343,7 @@ def _case_section(case: CaseResult) -> str:
         )
 
     if case.pile_head is not None:
-        s.append("\n### 4.6 杭頭結合部の照査(道示Ⅳ 12.9)\n")
+        s.append("\n### 4.6 杭頭結合部の照査(道示Ⅳ 12.9.3)\n")
         s.append(
             _table(
                 ["照査項目", "応力度 (N/mm²)", "許容値 (N/mm²)", "比", "判定"],
@@ -358,6 +358,21 @@ def _case_section(case: CaseResult) -> str:
                     for c in case.pile_head.checks
                 ],
             )
+        )
+        edge = case.pile_head.edge_distance
+        if edge is not None:
+            s.append(
+                f"\n最外周杭の縁端距離: 橋軸方向 {edge.edge_x:.2f} m、"
+                f"直角方向 {edge.edge_y:.2f} m(標準 1.0D = {edge.required:.2f} m)\n"
+            )
+            if edge.needs_horizontal_punching_check:
+                s.append(
+                    f"\n> **注意**: 縁端距離 {edge.minimum:.2f} m が標準の 1.0D を"
+                    "下回るため、フーチングの水平方向押抜きせん断の照査が"
+                    "必要である(レベル2地震動まで)。本ソフトでは未実装。\n"
+                )
+        s.append(
+            "\n> 杭頭補強鉄筋の応力度・定着長、仮想RC断面の照査は未実装である。\n"
         )
     return "".join(s)
 

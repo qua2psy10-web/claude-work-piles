@@ -354,7 +354,7 @@ def _render_stress_checks(case) -> None:
             )
 
     if case.pile_head is not None:
-        st.markdown("**杭頭結合部の照査(道示Ⅳ 12.9)**")
+        st.markdown("**杭頭結合部の照査(道示Ⅳ 12.9.3)**")
         st.dataframe(
             pd.DataFrame(
                 [
@@ -369,6 +369,23 @@ def _render_stress_checks(case) -> None:
                 ]
             ),
             width="stretch",
+        )
+        edge = case.pile_head.edge_distance
+        if edge is not None:
+            st.caption(
+                f"最外周杭の縁端距離: 橋軸方向 {edge.edge_x:.2f} m、"
+                f"直角方向 {edge.edge_y:.2f} m(標準 1.0D = {edge.required:.2f} m)"
+            )
+            if edge.needs_horizontal_punching_check:
+                st.warning(
+                    f"縁端距離 {edge.minimum:.2f} m が標準の 1.0D "
+                    f"({edge.required:.2f} m)未満です。フーチングの"
+                    "**水平方向押抜きせん断**の照査が必要ですが未実装です"
+                    "(レベル2地震動まで照査が必要)。"
+                )
+        st.caption(
+            "杭頭補強鉄筋の応力度・定着長、仮想RC断面の照査は未実装です。"
+            "本表だけでは杭頭結合部の安全性を確認したことになりません。"
         )
 
 

@@ -9,7 +9,9 @@ from core.capacity.negative_friction import (
 )
 from core.models import (
     ConstructionMethod,
+    Footing,
     LoadCase,
+    PileArrangement,
     PileSpec,
     PileType,
     SoilLayer,
@@ -17,7 +19,11 @@ from core.models import (
     SoilType,
 )
 from core.section.checks import MaterialSpec, check_section
-from core.section.pile_head import check_pile_head, punching_shear_area
+from core.section.pile_head import (
+    check_pile_head,
+    edge_distances,
+    punching_shear_area,
+)
 from core.section.rc import RebarLayout
 from core.standards import SIGMA_A_STEEL, SIGMA_SA_REBAR, STRESS_INCREASE
 
@@ -159,6 +165,7 @@ def test_punching_area_requires_thickness():
 
 
 def test_pile_head_checks():
+    """押込み力に対する押抜きせん断と支圧を照査する(道示Ⅳ 12.9.3)。"""
     result = check_pile_head(
         pile_diameter=1.0,
         footing_height=1.5,
@@ -170,10 +177,63 @@ def test_pile_head_checks():
     )
     names = [c.name for c in result.checks]
     assert "杭頭押抜きせん断応力度" in names
-    assert "杭頭水平支圧応力度" in names
+    assert "杭頭支圧応力度" in names
     tau = next(c for c in result.checks if "押抜き" in c.name)
     assert tau.stress == pytest.approx(2000.0 / result.punching_area / 1000.0)
     assert tau.allowable == pytest.approx(0.90)
+    # 支圧は軸力を杭断面積で除した値、許容値は安全側に σca を用いる
+    bearing = next(c for c in result.checks if "支圧" in c.name)
+    assert bearing.stress == pytest.approx(2000.0 / (math.pi / 4) / 1000.0)
+    assert bearing.allowable == pytest.approx(8.0)
+
+
+def test_pile_head_bearing_ignores_uplift():
+    """支圧は押込み時のみ。引抜き時は 0 とする。"""
+    result = check_pile_head(1.0, 1.5, 24, LoadCase.PERMANENT, -2000.0, 0.0, 0.0)
+    bearing = next(c for c in result.checks if "支圧" in c.name)
+    assert bearing.stress == 0.0
+
+
+def test_edge_distance_standard():
+    """縁端距離が 1.0D 以上なら標準、未満なら水平押抜きせん断の照査が必要。"""
+    arrangement = PileArrangement(nx=2, ny=3, spacing_x=2.5, spacing_y=2.5)
+    # 橋軸方向: 幅8.0 → 8/2 − 1.25 = 2.75m、直角方向: 8/2 − 2.5 = 1.5m
+    wide = Footing(width_x=8.0, width_y=8.0, height=1.5, embedment=2.0)
+    edge = edge_distances(wide, arrangement, diameter=1.0)
+    assert edge.edge_x == pytest.approx(2.75)
+    assert edge.edge_y == pytest.approx(1.5)
+    assert edge.minimum == pytest.approx(1.5)
+    assert edge.required == pytest.approx(1.0)
+    assert edge.is_standard
+    assert not edge.needs_horizontal_punching_check
+
+    # 幅を詰めると縁端距離が 1.0D を下回る
+    narrow = Footing(width_x=8.0, width_y=5.5, height=1.5, embedment=2.0)
+    edge = edge_distances(narrow, arrangement, diameter=1.0)
+    assert edge.edge_y == pytest.approx(0.25)
+    assert not edge.is_standard
+    assert edge.needs_horizontal_punching_check
+
+
+def test_edge_distance_scales_with_diameter():
+    """必要縁端距離は杭径に比例する。"""
+    arrangement = PileArrangement(nx=2, ny=2, spacing_x=3.0, spacing_y=3.0)
+    footing = Footing(width_x=6.0, width_y=6.0, height=2.0, embedment=2.0)
+    # 縁端距離 = 3.0 − 1.5 = 1.5m
+    assert edge_distances(footing, arrangement, 1.0).is_standard
+    assert not edge_distances(footing, arrangement, 2.0).is_standard
+
+
+def test_check_pile_head_includes_edge_distance_when_given():
+    arrangement = PileArrangement(nx=2, ny=3, spacing_x=2.5, spacing_y=2.5)
+    footing = Footing(width_x=8.0, width_y=8.0, height=1.5, embedment=2.0)
+    with_edge = check_pile_head(
+        1.0, 1.5, 24, LoadCase.PERMANENT, 2000.0, 200.0, 150.0,
+        footing=footing, arrangement=arrangement,
+    )
+    assert with_edge.edge_distance is not None
+    without = check_pile_head(1.0, 1.5, 24, LoadCase.PERMANENT, 2000.0, 200.0, 150.0)
+    assert without.edge_distance is None
 
 
 def test_pile_head_uplift_uses_absolute_value():

@@ -186,6 +186,8 @@ def analyze(
                 axial=critical.axial,
                 shear=critical.shear,
                 moment=critical.moment,
+                footing=footing,
+                arrangement=arrangement,
             )
         cases.append(
             CaseResult(
