@@ -190,10 +190,16 @@ def _bearing_section(report: StabilityReport) -> str:
     s = ["\n## 3. 杭の軸方向支持力(道示Ⅳ 12.4)\n"]
     s.append("Ru = qd・A + U・Σ Li・fi\n\n")
     s.append(
+        f"- 先端付近の平均N値(先端±1D) = {_num(bc.n_tip, 1)}\n"
         f"- 先端支持力度 qd = {_num(bc.qd, 0)} kN/m²、"
         f"先端面積 Ap = {bc.tip_area:.4f} m²\n"
         f"- 先端支持力 qd・Ap = {_num(bc.tip_resistance, 0)} kN\n"
     )
+    if bc.tip_zone_excluded:
+        s.append(
+            f"- 周面摩擦は杭先端から 1D 手前(深さ "
+            f"{bc.skin_bottom_depth:.2f} m)までを計上(道示Ⅳ 12.4.1)\n"
+        )
     s.append(
         "\n"
         + _table(

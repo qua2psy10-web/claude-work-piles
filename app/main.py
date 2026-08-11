@@ -176,9 +176,15 @@ def _render_stability(report: StabilityReport) -> None:
         c2.metric("先端支持力 qd·A", f"{bc.tip_resistance:,.0f} kN")
         c3.metric("周面摩擦力 U·ΣLf", f"{bc.skin_resistance:,.0f} kN")
         st.caption(
+            f"先端付近の平均N値(±1D) = {bc.n_tip:.1f}、"
             f"qd = {bc.qd:,.0f} kN/m², Ap = {bc.tip_area:.4f} m², "
             f"W = {bc.w_pile:,.0f} kN, Ws = {bc.w_soil:,.0f} kN"
         )
+        if bc.tip_zone_excluded:
+            st.caption(
+                f"周面摩擦は杭先端から 1D 手前(深さ {bc.skin_bottom_depth:.2f} m)"
+                "までを計上(道示Ⅳ 12.4.1 の重複計上排除)"
+            )
         st.dataframe(
             pd.DataFrame(
                 [

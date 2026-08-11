@@ -100,12 +100,13 @@ def test_bearing_capacity_hand_calculation():
 
     先端は Ds層(砂質土) → qd = 3000, A = π/4 = 0.785398
       先端支持力 = 2356.19 kN
-    周面: Ac層 2〜10m (8m, f = c = 40), Ds層 10〜20m (10m, f = 5N = 200 → 上限200)
+    周面: 先端から 1D = 1.0m 手前(深さ19m)までを計上する(道示Ⅳ 12.4.1)
+      Ac層 2〜10m (8m, f = c = 40), Ds層 10〜19m (9m, f = 5N = 200 → 上限200)
       U = π = 3.141593
       Ac: 3.141593×8×40 = 1005.31
-      Ds: 3.141593×10×200 = 6283.19
-      計 7288.50 kN
-    Ru = 2356.19 + 7288.50 = 9644.69 kN
+      Ds: 3.141593×9×200 = 5654.87
+      計 6660.18 kN
+    Ru = 2356.19 + 6660.18 = 9016.37 kN
     """
     pile = PileSpec(
         pile_type=PileType.CAST_IN_PLACE,
@@ -117,9 +118,92 @@ def test_bearing_capacity_hand_calculation():
     assert bc.qd == 3000.0
     assert bc.tip_area == pytest.approx(math.pi / 4)
     assert bc.tip_resistance == pytest.approx(2356.194, rel=1e-4)
-    assert bc.skin_resistance == pytest.approx(7288.50, rel=1e-4)
-    assert bc.ru == pytest.approx(9644.69, rel=1e-4)
+    assert bc.skin_resistance == pytest.approx(6660.18, rel=1e-4)
+    assert bc.ru == pytest.approx(9016.37, rel=1e-4)
     assert [s.layer_name for s in bc.skin_segments] == ["Ac", "Ds"]
+    assert bc.skin_bottom_depth == pytest.approx(19.0)
+    assert bc.tip_zone_excluded
+
+
+def test_tip_zone_exclusion_can_be_disabled():
+    """1D 除外を無効にすると先端まで全長で周面摩擦を計上する。"""
+    pile = PileSpec(
+        pile_type=PileType.CAST_IN_PLACE,
+        method=ConstructionMethod.CAST_IN_PLACE,
+        diameter=1.0,
+        length=18.0,
+    )
+    profile = profile_two_layers()
+    with_rule = compute_bearing_capacity(pile, profile, embedment=2.0)
+    without = compute_bearing_capacity(
+        pile, profile, embedment=2.0, exclude_tip_zone=False
+    )
+    # 除外分 = π×1.0m×200 = 628.32 kN
+    assert without.skin_resistance - with_rule.skin_resistance == pytest.approx(
+        math.pi * 1.0 * 200.0, rel=1e-6
+    )
+    assert without.skin_bottom_depth == pytest.approx(20.0)
+    assert not without.tip_zone_excluded
+
+
+def test_tip_zone_exclusion_clamped_for_short_pile():
+    """杭長が 1D 以下でも周面摩擦の下端が杭頭より上に行かない。"""
+    pile = PileSpec(
+        pile_type=PileType.CAST_IN_PLACE,
+        method=ConstructionMethod.CAST_IN_PLACE,
+        diameter=2.0,
+        length=1.5,
+    )
+    bc = compute_bearing_capacity(pile, profile_two_layers(), embedment=2.0)
+    assert bc.skin_bottom_depth == pytest.approx(2.0)
+    assert bc.skin_resistance == 0.0
+
+
+def test_average_n_near_tip():
+    """N値は先端から上下 1D の範囲の層厚加重平均を用いる。"""
+    profile = profile_two_layers()  # Ac(N=4) 0〜10m, Ds(N=40) 10〜25m
+    pile = PileSpec(
+        pile_type=PileType.STEEL_PIPE,
+        method=ConstructionMethod.DRIVEN,
+        diameter=1.0,
+        length=8.5,
+        wall_thickness=12.0,
+    )
+    # 先端 10.5m、範囲 9.5〜11.5m → Ac 0.5m(N=4) + Ds 1.0m(N=40)... の加重平均
+    bc = compute_bearing_capacity(pile, profile, embedment=2.0)
+    expected_n = (4.0 * 0.5 + 40.0 * 1.5) / 2.0
+    assert bc.n_tip == pytest.approx(expected_n)
+    # qd = 130N(上限 6500)
+    assert bc.qd == pytest.approx(min(130.0 * expected_n, 6500.0))
+
+
+def test_average_n_clamped_at_profile_bottom():
+    """先端+1D が地盤モデルを超える場合は範囲を切り詰める。"""
+    profile = profile_two_layers()  # 全深度 25m
+    pile = PileSpec(
+        pile_type=PileType.CAST_IN_PLACE,
+        method=ConstructionMethod.CAST_IN_PLACE,
+        diameter=1.0,
+        length=23.0,
+    )
+    bc = compute_bearing_capacity(pile, profile, embedment=2.0)
+    # 先端 25m、範囲 24〜25m はすべて Ds層
+    assert bc.n_tip == pytest.approx(40.0)
+
+
+def test_explicit_n_tip_overrides_average():
+    pile = PileSpec(
+        pile_type=PileType.STEEL_PIPE,
+        method=ConstructionMethod.DRIVEN,
+        diameter=1.0,
+        length=18.0,
+        wall_thickness=12.0,
+    )
+    bc = compute_bearing_capacity(
+        pile, profile_two_layers(), embedment=2.0, n_tip=25.0
+    )
+    assert bc.n_tip == 25.0
+    assert bc.qd == pytest.approx(130.0 * 25.0)
 
 
 def test_allowable_capacity_safety_factors():

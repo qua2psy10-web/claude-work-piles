@@ -57,6 +57,9 @@ class BearingCapacity:
     ru: float = 0.0  # 極限支持力 (kN)
     w_pile: float = 0.0  # 杭+内部土の有効重量 W (kN)
     w_soil: float = 0.0  # 置換土の有効重量 Ws (kN)
+    n_tip: float = 0.0  # qd の算定に用いた先端付近の平均N値
+    skin_bottom_depth: float = 0.0  # 周面摩擦を計上した下端深度 (m)
+    tip_zone_excluded: bool = True  # 先端 1D 区間を除外したか
 
     def allowable_push(self, case: LoadCase) -> float:
         """許容押込み支持力 Ra (kN)"""
@@ -119,12 +122,35 @@ def skin_friction_intensity(
     return min(f, limit) if limit is not None else f
 
 
+def average_n_near_tip(
+    profile: SoilProfile, tip_depth: float, diameter: float
+) -> float:
+    """杭先端から上方 1D・下方 1D の範囲の平均N値(道示Ⅳ 12.4.1)。
+
+    杭先端の極限支持力度 qd の算定に用いるN値は、先端位置の1点ではなく
+    先端近傍の平均値を用いる。地盤モデルの範囲外は評価区間から除外する。
+    """
+    top = max(0.0, tip_depth - diameter)
+    bottom = min(profile.total_depth, tip_depth + diameter)
+    if bottom <= top:
+        return profile.layer_at(tip_depth).n_value
+    weighted = 0.0
+    for layer_top, layer_bottom, layer in profile.layer_boundaries():
+        seg_top = max(layer_top, top)
+        seg_bottom = min(layer_bottom, bottom)
+        if seg_bottom <= seg_top:
+            continue
+        weighted += layer.n_value * (seg_bottom - seg_top)
+    return weighted / (bottom - top)
+
+
 def compute_bearing_capacity(
     pile: PileSpec,
     profile: SoilProfile,
     embedment: float,
     n_tip: float | None = None,
     inner_soil: bool = False,
+    exclude_tip_zone: bool = True,
 ) -> BearingCapacity:
     """1本杭の軸方向支持力を算定する。
 
@@ -133,9 +159,14 @@ def compute_bearing_capacity(
     embedment:
         地表面から杭頭(フーチング下面)までの深さ (m)。
     n_tip:
-        杭先端付近の平均N値。省略時は先端が位置する層のN値を用いる。
+        杭先端付近の平均N値。省略時は先端から上下 1D の範囲の平均値
+        (:func:`average_n_near_tip`)を用いる。
     inner_soil:
         中空杭で内部の土を重量に算入するか(閉端杭は True 相当)。
+    exclude_tip_zone:
+        杭先端から上方 1D の区間の周面摩擦力を計上しないか(道示Ⅳ 12.4.1)。
+        載荷試験に基づく qd には先端近傍の周面摩擦の寄与が既に含まれるため、
+        重複計上を避ける規定。既定で有効。
     """
     d = pile.diameter
     tip_depth = embedment + pile.length
@@ -148,14 +179,20 @@ def compute_bearing_capacity(
     area = math.pi * d**2 / 4.0
     perimeter = math.pi * d
     tip_layer = profile.layer_at(tip_depth)
-    n_value_tip = tip_layer.n_value if n_tip is None else n_tip
+    n_value_tip = (
+        average_n_near_tip(profile, tip_depth, d) if n_tip is None else n_tip
+    )
     qd = tip_resistance_intensity(pile.method, tip_layer, n_value_tip)
+
+    # 周面摩擦を計上する下端(先端から 1D 手前で打ち切る)
+    skin_bottom = tip_depth - d if exclude_tip_zone else tip_depth
+    skin_bottom = max(skin_bottom, embedment)
 
     segments: list[SkinFrictionSegment] = []
     skin = 0.0
     for top, bottom, layer in profile.layer_boundaries():
         seg_top = max(top, embedment)
-        seg_bottom = min(bottom, tip_depth)
+        seg_bottom = min(bottom, skin_bottom)
         length = seg_bottom - seg_top
         if length <= 0:
             continue
@@ -184,6 +221,9 @@ def compute_bearing_capacity(
         ru=ru,
         w_pile=w_pile,
         w_soil=w_soil,
+        n_tip=n_value_tip,
+        skin_bottom_depth=skin_bottom,
+        tip_zone_excluded=exclude_tip_zone,
     )
 
 
