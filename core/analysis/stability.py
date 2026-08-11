@@ -21,6 +21,7 @@ from core.standards import (
     ALLOWABLE_DISPLACEMENT_DIA_THRESHOLD,
     ALLOWABLE_DISPLACEMENT_MM,
     ALLOWABLE_DISPLACEMENT_RATIO,
+    E0Method,
 )
 
 
@@ -102,6 +103,7 @@ def analyze(
     fck: int = 24,
     material: MaterialSpec | None = None,
     check_negative_friction: bool = False,
+    e0_method: E0Method = E0Method.N_VALUE,
 ) -> StabilityReport:
     """全荷重ケースについて安定計算・断面照査・杭頭結合部の照査を行う。
 
@@ -111,6 +113,8 @@ def analyze(
         杭体の材料条件。省略時は断面照査・杭頭結合部の照査を行わない。
     check_negative_friction:
         負の周面摩擦力(NF)を検討するか。常時の杭頭最大軸力を死荷重とみなす。
+    e0_method:
+        変形係数 E0 の推定方法。kH の換算係数 α がこれにより決まる。
     """
     section = pile_section(pile, fck=fck)
     bearing = compute_bearing_capacity(pile, profile, footing.embedment)
@@ -119,7 +123,9 @@ def analyze(
 
     cases: list[CaseResult] = []
     for load in loads:
-        springs = lateral_springs(pile, section, profile, footing.embedment, load.case)
+        springs = lateral_springs(
+            pile, section, profile, footing.embedment, load.case, e0_method=e0_method
+        )
         result = solve_stability(
             arrangement,
             kv=kv,

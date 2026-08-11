@@ -192,11 +192,28 @@ def test_de_table_values_match_reference():
 
 def test_kh_constants():
     assert st.E0_FROM_N == 2800.0
-    assert st.ALPHA_KH_NORMAL == 1.0
-    assert st.ALPHA_KH_SEISMIC == 2.0
     assert st.ALLOWABLE_DISPLACEMENT_MM == 15.0
     assert st.ALLOWABLE_DISPLACEMENT_RATIO == 0.01
     assert st.ALLOWABLE_DISPLACEMENT_DIA_THRESHOLD == 1.5
+
+
+def test_alpha_kh_by_e0_method():
+    """α は E0 の推定方法により決まる(道示Ⅳ 9.5.2)。
+
+    N値・平板載荷試験: 常時1 / 地震時2
+    孔内水平載荷試験・室内試験: 常時4 / 地震時8
+    """
+    assert st.ALPHA_KH == {
+        st.E0Method.N_VALUE: (1.0, 2.0),
+        st.E0Method.PLATE_LOADING: (1.0, 2.0),
+        st.E0Method.BOREHOLE_LATERAL: (4.0, 8.0),
+        st.E0Method.LAB_COMPRESSION: (4.0, 8.0),
+    }
+    # すべての推定方法が定義されていること
+    assert set(st.ALPHA_KH) == set(st.E0Method)
+    # 地震時は常時のちょうど2倍
+    for normal, seismic in st.ALPHA_KH.values():
+        assert seismic == pytest.approx(2.0 * normal)
 
 
 def test_stress_increase_factors():

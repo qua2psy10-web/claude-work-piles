@@ -34,6 +34,7 @@ from core.standards import (
     EC_CONCRETE,
     SIGMA_A_STEEL,
     SIGMA_SA_REBAR,
+    E0Method,
     GroundType,
 )
 
@@ -214,7 +215,8 @@ def _render_stability(report: StabilityReport) -> None:
             c3.metric("Kv", f"{case.kv:,.0f} kN/m")
             c4.metric("水平変位 δ", f"{case.result.u * 1000:.2f} mm")
             st.caption(
-                f"E0 = {sp.e0:,.0f} kN/m², BH = {sp.bh:.3f} m, "
+                f"E0 = {sp.e0:,.0f} kN/m², α = {sp.alpha:g}, "
+                f"BH = {sp.bh:.3f} m, "
                 f"βL = {sp.beta_le:.2f}"
                 + ("(半無限長)" if sp.is_semi_infinite else "(**有限長: 要注意**)")
                 + f", 収束 {sp.iterations} 回"
@@ -429,6 +431,18 @@ def main() -> None:
             0.0, 99.0,
             value=(loaded.soil_profile.gwl if loaded else 1.5),
             step=0.1, key=f"gwl_{nonce}",
+        )
+        e0_method = st.selectbox(
+            "変形係数 E0 の推定方法",
+            [m.value for m in E0Method],
+            index=(
+                [m for m in E0Method].index(loaded.e0_method) if loaded else 0
+            ),
+            key=f"e0m_{nonce}",
+            help=(
+                "kH の換算係数 α が決まる。N値・平板載荷は常時1.0/地震時2.0、"
+                "孔内水平載荷・室内試験は 4.0/8.0"
+            ),
         )
 
     tab_soil, tab_pile, tab_load, tab_liq, tab_stab = st.tabs(
@@ -708,6 +722,7 @@ def main() -> None:
                     fck=int(fck),
                     material=material_spec,
                     check_negative_friction=use_nf,
+                    e0_method=E0Method(e0_method),
                 )
             except (ValueError, NotImplementedError, RuntimeError) as exc:
                 st.error(f"計算エラー: {exc}")
@@ -728,6 +743,7 @@ def main() -> None:
                 seismic=SeismicConditions(
                     ground_type=GroundType(ground_type), cz_type1=cz1, cz_type2=cz2
                 ),
+                e0_method=E0Method(e0_method),
                 pile=pile_spec,
                 arrangement=arrangement_spec,
                 footing=footing_spec,

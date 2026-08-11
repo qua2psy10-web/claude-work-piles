@@ -116,6 +116,7 @@ def _sheet_conditions(ws: Worksheet, project: DesignProject) -> None:
         ["項目", "値"],
         [
             ["地下水位 (m)", project.soil_profile.gwl],
+            ["E0の推定方法", project.e0_method.value],
             ["地盤種別", project.seismic.ground_type.value],
             ["cIz", project.seismic.cz_type1],
             ["cIIz", project.seismic.cz_type2],
@@ -248,6 +249,7 @@ def _sheet_case(ws: Worksheet, report: StabilityReport, case) -> None:
         ["項目", "値", "単位"],
         [
             ["変形係数 E0", round(sp.e0, 0), "kN/m²"],
+            ["換算係数 α", sp.alpha, "—"],
             ["換算載荷幅 BH", round(sp.bh, 4), "m"],
             ["水平方向地盤反力係数 kH", round(sp.kh, 0), "kN/m³"],
             ["特性値 β", round(sp.beta, 5), "1/m"],

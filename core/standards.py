@@ -234,10 +234,29 @@ EC_CONCRETE: dict[int, float] = {
 # ---------------------------------------------------------------------------
 # E0 = 2800N は複数の二次資料および提供解説資料で確認済み
 E0_FROM_N = 2800.0  # N値から推定する変形係数 E0 = 2800N (kN/m2)
-# .. warning:: α の値(常時1.0 / 地震時2.0)は未照合。提供解説資料にも
-#    「α は評価手法や載荷条件による補正係数」とあるのみで具体値の記載がない。
-ALPHA_KH_NORMAL = 1.0  # 常時・暴風時
-ALPHA_KH_SEISMIC = 2.0  # 地震時
+
+
+class E0Method(str, Enum):
+    """変形係数 E0 の推定方法。α の値がこれにより決まる。"""
+
+    N_VALUE = "N値からの推定(E0=2800N)"
+    PLATE_LOADING = "平板載荷試験(繰返し曲線の1/2)"
+    BOREHOLE_LATERAL = "孔内水平載荷試験"
+    LAB_COMPRESSION = "一軸圧縮試験・三軸圧縮試験"
+
+
+# α: 変形係数 E0 を水平方向地盤反力係数へ換算する係数(道示Ⅳ 9.5.2)
+#     kH0 =(1/0.3)・α・E0
+#   E0 の推定方法 → (常時・暴風時, 地震時)
+#
+# 提供解説資料で確認済み。α は地震時の地盤ばねの初期剛性を評価するための
+# 係数であり、支持力や部材耐力・地盤反力度の上限値を2倍にするものではない。
+ALPHA_KH: dict[E0Method, tuple[float, float]] = {
+    E0Method.N_VALUE: (1.0, 2.0),
+    E0Method.PLATE_LOADING: (1.0, 2.0),
+    E0Method.BOREHOLE_LATERAL: (4.0, 8.0),
+    E0Method.LAB_COMPRESSION: (4.0, 8.0),
+}
 
 # 杭基礎の許容水平変位(道示Ⅳ 9.6): 杭径1.5m未満は15mm、以上は杭径の1%
 ALLOWABLE_DISPLACEMENT_MM = 15.0

@@ -14,7 +14,7 @@ from core.models import (
     SoilProfile,
     SoilType,
 )
-from core.standards import EC_CONCRETE, E_STEEL
+from core.standards import EC_CONCRETE, E_STEEL, E0Method
 
 CIP_PILE = PileSpec(
     pile_type=PileType.CAST_IN_PLACE,
@@ -115,6 +115,61 @@ def test_lateral_springs_converge_and_satisfy_definitions():
     assert springs.is_semi_infinite
     # K1・K4 = 2・K2² より剛性マトリクスは常に正則(変位法が解ける条件)
     assert springs.k1 * springs.k4 == pytest.approx(2 * springs.k2**2, rel=1e-9)
+
+
+def test_kh0_matches_reference_worked_example():
+    """提供解説資料の計算例と突合する。
+
+    E0 = 28,000 kN/m²(N=10 → 2800N)のとき
+      常時  : kH0 =(1/0.3)× 1.0 × 28,000 ≒ 93,300 kN/m³
+      地震時: kH0 =(1/0.3)× 2.0 × 28,000 ≒ 186,700 kN/m³
+    kH は kH0 に (BH/0.3)^(−3/4) を乗じた値。
+    """
+    section = pile_section(CIP_PILE, fck=24)
+    for case, expected_kh0 in (
+        (LoadCase.PERMANENT, 93_333.3),
+        (LoadCase.LEVEL1_EQ, 186_666.7),
+    ):
+        sp = lateral_springs(CIP_PILE, section, sand_profile(), 2.0, case)
+        assert sp.e0 == pytest.approx(28_000.0)
+        kh0 = sp.alpha * sp.e0 / 0.3
+        assert kh0 == pytest.approx(expected_kh0, rel=1e-4)
+        assert sp.kh == pytest.approx(kh0 * (sp.bh / 0.3) ** -0.75, rel=1e-9)
+
+
+def test_alpha_depends_on_e0_method():
+    """孔内水平載荷試験・室内試験では α = 4(常時)/ 8(地震時)。"""
+    section = pile_section(CIP_PILE, fck=24)
+    profile = sand_profile()
+    for method, (a_normal, a_seismic) in (
+        (E0Method.N_VALUE, (1.0, 2.0)),
+        (E0Method.PLATE_LOADING, (1.0, 2.0)),
+        (E0Method.BOREHOLE_LATERAL, (4.0, 8.0)),
+        (E0Method.LAB_COMPRESSION, (4.0, 8.0)),
+    ):
+        normal = lateral_springs(
+            CIP_PILE, section, profile, 2.0, LoadCase.PERMANENT, e0_method=method
+        )
+        seismic = lateral_springs(
+            CIP_PILE, section, profile, 2.0, LoadCase.LEVEL1_EQ, e0_method=method
+        )
+        assert normal.alpha == a_normal
+        assert seismic.alpha == a_seismic
+        # α が4倍になれば kH も4倍(同じ BH で比較すれば)
+        assert normal.alpha * normal.e0 / 0.3 == pytest.approx(
+            normal.kh * (normal.bh / 0.3) ** 0.75
+        )
+
+
+def test_storm_uses_normal_alpha():
+    """暴風時は常時と同じ α を用いる。"""
+    section = pile_section(CIP_PILE, fck=24)
+    normal = lateral_springs(
+        CIP_PILE, section, sand_profile(), 2.0, LoadCase.PERMANENT
+    )
+    storm = lateral_springs(CIP_PILE, section, sand_profile(), 2.0, LoadCase.STORM)
+    assert storm.alpha == normal.alpha == 1.0
+    assert storm.kh == pytest.approx(normal.kh)
 
 
 def test_seismic_alpha_doubles_kh():

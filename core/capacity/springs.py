@@ -21,10 +21,10 @@ from core.models.loads import LoadCase
 from core.models.pile import PileSpec
 from core.models.soil import SoilProfile
 from core.standards import (
-    ALPHA_KH_NORMAL,
-    ALPHA_KH_SEISMIC,
+    ALPHA_KH,
     E0_FROM_N,
     KV_A_COEF,
+    E0Method,
 )
 
 
@@ -46,6 +46,7 @@ class LateralSprings:
     """水平方向のバネ定数と関連量。"""
 
     e0: float  # 変形係数 (kN/m2)
+    alpha: float  # E0 → kH0 の換算係数
     kh: float  # 水平方向地盤反力係数 (kN/m3)
     bh: float  # 換算載荷幅 (m)
     beta: float  # 特性値 (1/m)
@@ -102,16 +103,19 @@ def lateral_springs(
     profile: SoilProfile,
     embedment: float,
     case: LoadCase,
+    e0_method: E0Method = E0Method.N_VALUE,
     max_iter: int = 100,
     tol: float = 1e-8,
 ) -> LateralSprings:
     """kH・β と杭頭バネ定数 K1〜K4 を収束計算で求める。
 
     E0 の平均区間は 1/β 深さとし、β の更新に合わせて再評価する。
+
+    ``e0_method`` は変形係数 E0 の推定方法。α の値がこれにより決まる
+    (N値・平板載荷は常時1/地震時2、孔内水平載荷・室内試験は 4/8)。
     """
-    alpha = (
-        ALPHA_KH_SEISMIC if case == LoadCase.LEVEL1_EQ else ALPHA_KH_NORMAL
-    )
+    alpha_normal, alpha_seismic = ALPHA_KH[e0_method]
+    alpha = alpha_seismic if case == LoadCase.LEVEL1_EQ else alpha_normal
     d = pile.diameter
     ei = section.ei
 
@@ -145,6 +149,7 @@ def lateral_springs(
     k4 = 2.0 * ei * beta
     return LateralSprings(
         e0=e0,
+        alpha=alpha,
         kh=kh,
         bh=bh,
         beta=beta,

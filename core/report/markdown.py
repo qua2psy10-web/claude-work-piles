@@ -82,6 +82,7 @@ def _design_conditions(project: DesignProject) -> str:
         )
     )
     s.append(f"\n地下水位: 地表面下 {project.soil_profile.gwl:.1f} m\n")
+    s.append(f"\n変形係数 E0 の推定方法: {project.e0_method.value}\n")
     s.append(
         f"\n地盤種別: {project.seismic.ground_type.value}、"
         f"地域別補正係数 cIz={project.seismic.cz_type1}、"
@@ -255,6 +256,7 @@ def _case_section(case: CaseResult) -> str:
             ["項目", "値"],
             [
                 ["変形係数 E0", f"{_num(sp.e0, 0)} kN/m²"],
+                ["換算係数 α", f"{sp.alpha:g}"],
                 ["換算載荷幅 BH", f"{sp.bh:.3f} m"],
                 ["水平方向地盤反力係数 kH", f"{_num(sp.kh, 0)} kN/m³"],
                 ["特性値 β", f"{sp.beta:.4f} 1/m"],
