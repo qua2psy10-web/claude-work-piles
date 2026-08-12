@@ -255,6 +255,14 @@ def _render_stability(report: StabilityReport) -> None:
                         "土質": s.soil_type.value,
                         "長さ (m)": round(s.length, 2),
                         "f (kN/m²)": round(s.f, 1),
+                        **(
+                            {
+                                "DE": round(s.de, 2),
+                                "f·DE (kN/m²)": round(s.f_design, 1),
+                            }
+                            if bc.has_reduced_skin
+                            else {}
+                        ),
                         "U·L·f (kN)": round(s.force, 1),
                     }
                     for s in bc.skin_segments
@@ -262,6 +270,20 @@ def _render_stability(report: StabilityReport) -> None:
             ),
             width="stretch",
         )
+        if bc.has_reduced_skin:
+            lost = bc.skin_resistance_unreduced - bc.skin_resistance
+            st.caption(
+                f"液状化による低減で周面摩擦力が {lost:,.0f} kN 減少している"
+                f"(低減前 {bc.skin_resistance_unreduced:,.0f} kN → "
+                f"{bc.skin_resistance:,.0f} kN)。"
+                "f への DE の適用は**原典未確認**(安全側の判断)。"
+            )
+        if bc.tip_zone_liquefies:
+            st.warning(
+                f"杭先端付近(先端±1D)が液状化すると判定されています"
+                f"(DE = {bc.tip_de:.2f})。先端支持力度 qd は低減していません。"
+                "支持層の設定・杭長を確認してください。"
+            )
 
     for case in report.cases:
         label = case.loads.case.value

@@ -266,3 +266,140 @@ def test_level2_applies_reduction_per_node_with_bnwf():
 
     assert reduced.response.u > plain.response.u
     assert any("節点ごとに乗じている" in n for n in reduced.notes)
+
+
+# --- 支持力への反映 ----------------------------------------------------------
+
+
+def test_skin_friction_is_reduced_in_liquefied_layers():
+    """液状化層の周面摩擦力度に DE を乗じること(道示Ⅴ 8.2.4)。"""
+    from core.capacity.bearing import compute_bearing_capacity
+
+    profile = liquefiable_profile()
+    plain = compute_bearing_capacity(PILE, profile, FOOTING.embedment)
+    reduced = compute_bearing_capacity(
+        PILE, profile, FOOTING.embedment, reduction=sample_reduction()
+    )
+
+    assert reduced.skin_resistance < plain.skin_resistance
+    assert reduced.ru < plain.ru
+    # 低減前の値も保持している(内訳の提示に用いる)
+    assert reduced.skin_resistance_unreduced == pytest.approx(plain.skin_resistance)
+    assert reduced.has_reduced_skin
+    assert not plain.has_reduced_skin
+    # 先端支持力は低減しない
+    assert reduced.tip_resistance == pytest.approx(plain.tip_resistance)
+
+
+def test_reduction_is_applied_only_to_the_liquefied_layer():
+    """低減されるのは液状化と判定された層だけであること。"""
+    from core.capacity.bearing import compute_bearing_capacity
+
+    bc = compute_bearing_capacity(
+        PILE, liquefiable_profile(), FOOTING.embedment,
+        reduction=sample_reduction(),
+    )
+    by_name = {s.layer_name: s for s in bc.skin_segments}
+    assert by_name["As1"].is_reduced          # 浅部の緩い砂層
+    assert not by_name["Ds"].is_reduced       # 支持層(N=45、洪積層)
+    assert by_name["Ds"].de == 1.0
+    # f 自体は低減前の値のまま保持し、f_design が低減後
+    seg = by_name["As1"]
+    assert seg.f_design == pytest.approx(seg.f * seg.de)
+    assert seg.f_design < seg.f
+
+
+def test_reduced_skin_force_equals_the_exact_integral():
+    """f が層内一定なので、DE の層厚加重平均を乗じた値は ∫f・DE dz に一致する。"""
+    import math
+
+    from core.capacity.bearing import compute_bearing_capacity
+
+    reduction = sample_reduction()
+    bc = compute_bearing_capacity(
+        PILE, liquefiable_profile(), FOOTING.embedment, reduction=reduction
+    )
+    perimeter = math.pi * PILE.diameter
+    top = FOOTING.embedment
+    for seg in bc.skin_segments:
+        bottom = min(top + seg.length, bc.skin_bottom_depth)
+        # 区間を細かく分割した数値積分と比較する
+        n = 2000
+        dz = (bottom - top) / n
+        exact = sum(
+            reduction.factor_at(top + (i + 0.5) * dz) * seg.f * perimeter * dz
+            for i in range(n)
+        )
+        assert seg.force == pytest.approx(exact, rel=1e-6)
+        top = bottom
+
+
+def test_fully_liquefied_layer_contributes_no_skin_friction():
+    """DE = 0 の層は周面摩擦を全く負担しないこと。"""
+    from core.capacity.bearing import compute_bearing_capacity
+
+    bc = compute_bearing_capacity(
+        PILE, liquefiable_profile(n_value=6.0, fc=5.0), FOOTING.embedment,
+        reduction=fully_liquefied_reduction(),
+    )
+    shallow = next(s for s in bc.skin_segments if s.layer_name == "As1")
+    assert shallow.de == 0.0
+    assert shallow.force == 0.0
+    assert shallow.f > 0.0  # f 自体は算定されている
+
+
+def test_stability_reports_the_bearing_reduction():
+    """安定計算が低減の内訳と、許容支持力の低下を出すこと。"""
+    profile = liquefiable_profile()
+    loads = [FootingLoads(case=LoadCase.LEVEL1_EQ, v=9000.0, h=1500.0, m=4000.0)]
+    kwargs = dict(pile=PILE, arrangement=ARRANGEMENT, footing=FOOTING,
+                  profile=profile, loads=loads)
+    plain = analyze(**kwargs)
+    reduced = analyze(**kwargs, reduction=sample_reduction())
+
+    assert reduced.bearing.ru < plain.bearing.ru
+    assert reduced.bearing.allowable_push(LoadCase.LEVEL1_EQ) < plain.bearing.allowable_push(
+        LoadCase.LEVEL1_EQ
+    )
+    # 引抜き抵抗は周面摩擦力のみなので、より強く効く
+    assert reduced.bearing.allowable_pull(LoadCase.LEVEL1_EQ) < plain.bearing.allowable_pull(
+        LoadCase.LEVEL1_EQ
+    )
+    assert any("周面摩擦力度の低減内訳" in n for n in reduced.notes)
+    assert any("原典未確認" in n for n in reduced.notes)
+
+
+def test_liquefying_bearing_stratum_is_flagged():
+    """支持層が液状化する場合、qd を低減していない旨を警告すること。"""
+    from core.capacity.bearing import compute_bearing_capacity
+
+    # 全層が緩い砂で、杭先端まで液状化判定の範囲(20 m)に入る配置
+    profile = SoilProfile(
+        layers=[
+            SoilLayer(
+                name="As", soil_type=SoilType.SAND, thickness=30.0, n_value=12.0,
+                gamma_t=18.0, gamma_sat=19.0, fc=5.0, d50=0.3, d10=0.08,
+            ),
+        ],
+        gwl=1.0,
+    )
+    assessment = assess_liquefaction(profile, GroundType.TYPE_II)
+    # 打込み杭は支持層の最低N値の制約がないため、この地盤でも算定できる
+    short = PileSpec(
+        pile_type=PileType.STEEL_PIPE,
+        method=ConstructionMethod.DRIVEN,
+        diameter=1.0,
+        length=15.0,
+        wall_thickness=12.0,
+    )
+    bc = compute_bearing_capacity(
+        short, profile, 2.0,
+        reduction=SoilReduction.from_assessment(assessment, MOTION),
+    )
+    assert bc.tip_zone_liquefies
+    assert bc.tip_de < 1.0
+
+    report = analyze(short, ARRANGEMENT, FOOTING, profile,
+                     [FootingLoads(case=LoadCase.LEVEL1_EQ, v=5000.0, h=500.0, m=1000.0)],
+                     reduction=SoilReduction.from_assessment(assessment, MOTION))
+    assert any("先端支持力度 qd は低減して" in n for n in report.notes)

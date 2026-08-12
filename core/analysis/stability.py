@@ -125,7 +125,9 @@ def analyze(
         常時・レベル1地震時に適用するかは利用者の判断となる(注記を出す)。
     """
     section = pile_section(pile, fck=fck)
-    bearing = compute_bearing_capacity(pile, profile, footing.embedment)
+    bearing = compute_bearing_capacity(
+        pile, profile, footing.embedment, reduction=reduction
+    )
     kv = axial_spring(pile, section)
     delta_a = allowable_displacement(pile.diameter)
 
@@ -158,13 +160,37 @@ def analyze(
     if reduction is not None and reduction.has_reduction:
         span = reduction.reduced_depth_range()
         notes.append(
-            f"液状化による土質定数の低減を kH に反映している"
+            f"液状化による土質定数の低減を kH と周面摩擦力度 f に反映している"
             f"(低減区間: 深さ {span[0]:.1f}〜{span[1]:.1f} m、"
             f"{reduction.motion_type.value})。DE はレベル2地震動に対する"
             "液状化判定から得た値であり、常時・レベル1地震時の照査に用いる"
             "ことの適否は利用者が判断すること"
             "(レベル1地震動に対する液状化判定は未実装)。"
         )
+        if bearing.has_reduced_skin:
+            lost = bearing.skin_resistance_unreduced - bearing.skin_resistance
+            ratio = lost / (bearing.ru + lost) if bearing.ru + lost > 0 else 0.0
+            reduced = ", ".join(
+                f"{s.layer_name}: f {s.f:.0f} → {s.f_design:.0f} kN/m²"
+                f"(DE={s.de:.2f})"
+                for s in bearing.skin_segments
+                if s.is_reduced
+            )
+            notes.append(
+                f"周面摩擦力度の低減内訳 — {reduced}。"
+                f"極限支持力 Ru は {lost:.0f} kN 減少している"
+                f"(低減前比 {ratio * 100:.1f}%)。"
+                "**f への DE の適用は原典未確認**である。低減しないほうが"
+                "明確に非安全側であるため安全側の判断として適用している"
+                "(docs/VERIFICATION.md 参照)。"
+            )
+        if bearing.tip_zone_liquefies:
+            notes.append(
+                f"⚠ 杭先端付近(先端±1D)が液状化すると判定されている"
+                f"(DE={bearing.tip_de:.2f})。**先端支持力度 qd は低減して"
+                "いない**(支持層は液状化しない良質層であることが前提のため)。"
+                "支持層の設定が適切か、杭長を見直す必要がないかを確認すること。"
+            )
     cases: list[CaseResult] = []
     for load in loads:
         springs = lateral_springs(

@@ -15,13 +15,24 @@
    qd・f の推定式(:mod:`core.standards` の ``QD_SPECS`` / ``F_SPECS``)は
    道示Ⅳ 表-12.4.2(推定)の値を実装しているが、**実務適用前に原典との照合が必要**。
    詳細は ``docs/VERIFICATION.md`` を参照。
+
+液状化に伴う低減
+----------------
+``reduction`` を与えると、液状化が生じると判定された層の**周面摩擦力度 f に
+低減係数 DE を乗じる**。先端支持力度 qd は低減しない(支持層は液状化しない
+良質層であることが前提)。詳細と原典未確認である旨は
+:func:`compute_bearing_capacity` の docstring を参照。
 """
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from core.models.loads import LoadCase
+
+if TYPE_CHECKING:  # 循環インポートを避ける
+    from core.soil.liquefaction import SoilReduction
 from core.models.pile import ConstructionMethod, PileSpec, PileType, SupportType
 from core.models.soil import SoilLayer, SoilProfile, SoilType
 from core.standards import (
@@ -48,7 +59,17 @@ class SkinFrictionSegment:
     soil_type: SoilType
     length: float  # 杭が貫入する長さ (m)
     f: float  # 最大周面摩擦力度 (kN/m2)
-    force: float  # U・Li・fi (kN)
+    force: float  # U・Li・fi (kN)。低減がある場合は低減後の値
+    de: float = 1.0  # 液状化に伴う土質定数の低減係数(区間平均)
+
+    @property
+    def f_design(self) -> float:
+        """低減後の周面摩擦力度 (kN/m2)。"""
+        return self.f * self.de
+
+    @property
+    def is_reduced(self) -> bool:
+        return self.de < 1.0
 
 
 @dataclass(frozen=True)
@@ -67,6 +88,23 @@ class BearingCapacity:
     skin_bottom_depth: float = 0.0  # 周面摩擦を計上した下端深度 (m)
     tip_zone_excluded: bool = True  # 先端 1D 区間を除外したか
     support_type: SupportType = SupportType.END_BEARING  # 支持形式(安全率に影響)
+    tip_de: float = 1.0  # 先端付近(±1D)の DE。1.0 未満なら支持層が液状化する
+    # 低減を適用しなかった場合の周面摩擦力 (kN)。低減量の把握に用いる。
+    # :func:`compute_bearing_capacity` は常にこの値を設定する。
+    skin_resistance_unreduced: float = 0.0
+
+    @property
+    def has_reduced_skin(self) -> bool:
+        return any(s.is_reduced for s in self.skin_segments)
+
+    @property
+    def tip_zone_liquefies(self) -> bool:
+        """杭先端付近が液状化すると判定されているか。
+
+        本実装は先端支持力度 qd に DE を乗じていない(下記 :func:`compute_bearing_capacity`
+        の注記を参照)ため、この場合は利用者に判断を促す必要がある。
+        """
+        return self.tip_de < 1.0
 
     def safety_factor_push(self, case: LoadCase) -> float:
         """押込みの安全率 n(支持形式により異なる)。"""
@@ -278,6 +316,7 @@ def compute_bearing_capacity(
     n_tip: float | None = None,
     inner_soil: bool = False,
     exclude_tip_zone: bool = True,
+    reduction: "SoilReduction | None" = None,
 ) -> BearingCapacity:
     """1本杭の軸方向支持力を算定する。
 
@@ -294,6 +333,31 @@ def compute_bearing_capacity(
         杭先端から上方 1D の区間の周面摩擦力を計上しないか(道示Ⅳ 12.4.1)。
         載荷試験に基づく qd には先端近傍の周面摩擦の寄与が既に含まれるため、
         重複計上を避ける規定。既定で有効。
+    reduction:
+        液状化に伴う土質定数の低減係数 DE(道示Ⅴ 8.2.4)。与えると
+        **周面摩擦力度 f に区間平均の DE を乗じる**。
+
+        層内で f は一定なので、区間の DE を層厚加重平均したものを乗じた値は
+        ∫f・DE dz と厳密に一致する(近似ではない)。
+
+        .. warning::
+           **原典未確認**(確度 C)。DE を乗じる対象として資料で確認できている
+           のは側方地盤のバネ定数 kH までである。周面摩擦力度への適用は
+           以下の理由による判断であり、原典で確認すること:
+
+           (a) 液状化した層が満額の周面摩擦を発揮するとは考えられず、
+               低減しないほうが**明確に非安全側**である。
+           (b) 抵抗を小さくする側の扱いであり、安全側に外れる。
+
+           本ソフトの f は N 値相関から求めており、DE が乗じられる「土質定数」
+           (c・φ)そのものではない。f に直接 DE を乗じてよいのか、それとも
+           c・φ を低減してから f を算定し直すのかは、原典で要確認である。
+
+        .. note::
+           **先端支持力度 qd には乗じていない**。支持層は液状化しない良質層で
+           あることが前提だからである。判定範囲(通常は地表面から 20 m)内で
+           先端付近が液状化すると判定された場合は :attr:`BearingCapacity.tip_de`
+           が 1.0 未満になるので、利用者に判断を促すこと。
     """
     d = pile.diameter
     tip_depth = embedment + pile.length
@@ -328,6 +392,7 @@ def compute_bearing_capacity(
 
     segments: list[SkinFrictionSegment] = []
     skin = 0.0
+    skin_unreduced = 0.0
     for top, bottom, layer in profile.layer_boundaries():
         seg_top = max(top, embedment)
         seg_bottom = min(bottom, skin_bottom)
@@ -335,8 +400,11 @@ def compute_bearing_capacity(
         if length <= 0:
             continue
         f = skin_friction_intensity(pile.method, layer)
-        force = perimeter * length * f
+        # 層内で f は一定なので、DE の層厚加重平均を乗じた値は ∫f・DE dz に等しい
+        de = 1.0 if reduction is None else reduction.mean_factor(seg_top, seg_bottom)
+        force = perimeter * length * f * de
         skin += force
+        skin_unreduced += perimeter * length * f
         segments.append(
             SkinFrictionSegment(
                 layer_name=layer.name,
@@ -344,8 +412,16 @@ def compute_bearing_capacity(
                 length=length,
                 f=f,
                 force=force,
+                de=de,
             )
         )
+
+    # 先端支持力は低減しない。液状化する層が支持層になっていないかの確認用
+    tip_de = (
+        1.0
+        if reduction is None
+        else reduction.mean_factor(max(0.0, tip_depth - d), tip_depth + d)
+    )
 
     ru = qd * area + skin
     w_pile = _pile_effective_weight(pile, profile, embedment, tip_depth, inner_soil)
@@ -363,6 +439,8 @@ def compute_bearing_capacity(
         skin_bottom_depth=skin_bottom,
         tip_zone_excluded=exclude_tip_zone,
         support_type=pile.support_type,
+        tip_de=tip_de,
+        skin_resistance_unreduced=skin_unreduced,
     )
 
 

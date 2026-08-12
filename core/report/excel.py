@@ -207,6 +207,17 @@ def _sheet_bearing(ws: Worksheet, report: StabilityReport) -> None:
             ["先端面積 Ap", round(bc.tip_area, 4), "m²"],
             ["先端支持力 qd·Ap", round(bc.tip_resistance, 1), "kN"],
             ["周面摩擦力 U·ΣLf", round(bc.skin_resistance, 1), "kN"],
+            *(
+                [
+                    [
+                        "(液状化による低減前)",
+                        round(bc.skin_resistance_unreduced, 1),
+                        "kN",
+                    ]
+                ]
+                if bc.has_reduced_skin
+                else []
+            ),
             ["周面摩擦の計上下端", round(bc.skin_bottom_depth, 2), "m"],
             ["極限支持力 Ru", round(bc.ru, 1), "kN"],
             ["杭の有効重量 W", round(bc.w_pile, 1), "kN"],
@@ -216,9 +227,17 @@ def _sheet_bearing(ws: Worksheet, report: StabilityReport) -> None:
     row = _write_table(
         ws,
         row,
-        ["層名", "土質", "長さ(m)", "f (kN/m²)", "U·L·f (kN)"],
+        ["層名", "土質", "長さ(m)", "f (kN/m²)", "DE", "f·DE (kN/m²)", "U·L·f (kN)"],
         [
-            [s.layer_name, s.soil_type.value, round(s.length, 2), round(s.f, 1), round(s.force, 1)]
+            [
+                s.layer_name,
+                s.soil_type.value,
+                round(s.length, 2),
+                round(s.f, 1),
+                round(s.de, 2),
+                round(s.f_design, 1),
+                round(s.force, 1),
+            ]
             for s in bc.skin_segments
         ],
     )

@@ -205,24 +205,44 @@ def _bearing_section(report: StabilityReport) -> str:
             f"- 周面摩擦は杭先端から 1D 手前(深さ "
             f"{bc.skin_bottom_depth:.2f} m)までを計上(道示Ⅳ 12.4.1)\n"
         )
+    # 液状化による低減がある場合のみ DE・低減後 f の列を出す
+    reduced = bc.has_reduced_skin
+    header = ["層名", "土質", "長さ(m)", "f (kN/m²)"]
+    if reduced:
+        header += ["DE", "f·DE (kN/m²)"]
+    header += ["U·L·f (kN)"]
     s.append(
         "\n"
         + _table(
-            ["層名", "土質", "長さ(m)", "f (kN/m²)", "U·L·f (kN)"],
+            header,
             [
                 [
                     seg.layer_name,
                     seg.soil_type.value,
                     _num(seg.length, 2),
                     _num(seg.f, 1),
-                    _num(seg.force, 1),
                 ]
+                + (
+                    [_num(seg.de, 2), _num(seg.f_design, 1)] if reduced else []
+                )
+                + [_num(seg.force, 1)]
                 for seg in bc.skin_segments
             ],
         )
     )
+    s.append(f"\n- 周面摩擦力 U・ΣLi・fi = {_num(bc.skin_resistance, 0)} kN\n")
+    if reduced:
+        lost = bc.skin_resistance_unreduced - bc.skin_resistance
+        s.append(
+            f"  - 液状化による低減前は {_num(bc.skin_resistance_unreduced, 0)} kN"
+            f"(**{_num(lost, 0)} kN の減少**)\n"
+        )
+    if bc.tip_zone_liquefies:
+        s.append(
+            f"- ⚠ 杭先端付近(先端±1D)が液状化すると判定されている"
+            f"(DE = {bc.tip_de:.2f})。**先端支持力度 qd は低減していない**\n"
+        )
     s.append(
-        f"\n- 周面摩擦力 U・ΣLi・fi = {_num(bc.skin_resistance, 0)} kN\n"
         f"- **極限支持力 Ru = {_num(bc.ru, 0)} kN**\n"
         f"- 杭の有効重量 W = {_num(bc.w_pile, 0)} kN、"
         f"置換土の有効重量 Ws = {_num(bc.w_soil, 0)} kN\n"

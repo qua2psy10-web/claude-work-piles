@@ -982,7 +982,11 @@ def run_level2(
     分割を倍にすると誤差は約 1/4)。
     """
     section = pile_section(pile, fck=fck)
-    bearing = compute_bearing_capacity(pile, profile, footing.embedment)
+    # 軸方向バネの上限 Pu・Pt は周面摩擦力に依存するので、DE は分布バネ
+    # モデルの有無にかかわらず支持力側に反映する
+    bearing = compute_bearing_capacity(
+        pile, profile, footing.embedment, reduction=reduction
+    )
     kv = axial_spring(pile, section)
     axial = AxialSpringModel.from_bearing(kv, bearing)
     has_k_ep = all(layer.k_ep is not None for layer in profile.layers)
@@ -1007,8 +1011,23 @@ def run_level2(
         extra_notes.append(
             f"液状化による土質定数の低減 DE を考慮している"
             f"(低減区間: 深さ {span[0]:.1f}〜{span[1]:.1f} m、"
-            f"{reduction.motion_type.value})。{detail}。"
+            f"{reduction.motion_type.value})。水平方向は{detail}。"
         )
+        if bearing.has_reduced_skin:
+            lost = bearing.skin_resistance_unreduced - bearing.skin_resistance
+            extra_notes.append(
+                f"周面摩擦力度 f にも DE を乗じており、極限支持力 Ru が "
+                f"{lost:.0f} kN 減少している。これは軸方向バネの上限"
+                f"(押込み Pu・引抜き Pt)を直接下げるため、浮上りの発生"
+                "しやすさに影響する。**f への DE の適用は原典未確認**"
+                "(安全側の判断。docs/VERIFICATION.md 参照)。"
+            )
+        if bearing.tip_zone_liquefies:
+            extra_notes.append(
+                f"⚠ 杭先端付近が液状化すると判定されている"
+                f"(DE={bearing.tip_de:.2f})。先端支持力度 qd は低減して"
+                "いないため、支持層の設定を確認すること。"
+            )
     if allowable_ductility is None:
         allowable_ductility = allowable_ductility_for(
             structure_type, pile, rebar_grade

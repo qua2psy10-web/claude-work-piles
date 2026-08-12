@@ -188,3 +188,16 @@ def test_stability_reflects_the_reduction_when_enabled():
     report = at.session_state["report"]
     assert any("液状化による土質定数の低減" in n for n in report.notes)
     assert report.cases[0].springs.de < 1.0
+    # 支持力側にも効く(kH だけでなく周面摩擦力度も低減される)
+    assert report.bearing.has_reduced_skin
+    assert report.bearing.skin_resistance < report.bearing.skin_resistance_unreduced
+    assert any("周面摩擦力度の低減内訳" in n for n in report.notes)
+
+
+def test_stability_without_the_reduction_keeps_full_skin_friction():
+    """既定(低減なし)では周面摩擦力が満額であること。"""
+    at = run_app()
+    next(b for b in at.button if "安定計算を実行" in b.label).click().run()
+    bearing = at.session_state["report"].bearing
+    assert not bearing.has_reduced_skin
+    assert all(s.de == 1.0 for s in bearing.skin_segments)
