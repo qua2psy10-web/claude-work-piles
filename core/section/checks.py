@@ -11,7 +11,12 @@ from dataclasses import dataclass, field
 from core.capacity.section import CORROSION_ALLOWANCE_MM, hollow_circle
 from core.models.loads import LoadCase
 from core.models.pile import PileSpec, PileType
-from core.section.rc import RebarLayout, RcStressResult, analyze_circular_rc
+from core.section.rc import (
+    RebarLayout,
+    RcStressResult,
+    StirrupLayout,
+    analyze_circular_rc,
+)
 from core.standards import (
     EC_CONCRETE,
     PHC_BENDING_TENSION_BY_PRESTRESS,
@@ -100,6 +105,7 @@ class MaterialSpec:
     rebar_grade: str = "SD345"
     steel_grade: str = "SKK400"
     rebar: RebarLayout | None = None  # 場所打ち杭の軸方向鉄筋
+    stirrup: StirrupLayout | None = None  # 斜引張鉄筋(帯鉄筋)
     corrosion_mm: float = CORROSION_ALLOWANCE_MM
     # PHC杭の有効プレストレス σce (N/mm2)。地震時の許容曲げ引張応力度が
     # この値で決まるため、PHC杭に引張が生じる地震時の照査では必須。

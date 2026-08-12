@@ -52,6 +52,7 @@ def _check_max_shear(
         moment=peak.moment,
         axial=axial,
         rebar_grade=material.rebar_grade,
+        stirrup=material.stirrup,
     )
 
 

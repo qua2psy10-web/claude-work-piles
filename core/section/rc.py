@@ -51,6 +51,44 @@ class RebarLayout:
 
 
 @dataclass(frozen=True)
+class StirrupLayout:
+    """斜引張鉄筋(帯鉄筋)の配置。
+
+    円形断面の杭では、せん断ひび割れを横切る帯鉄筋は1断面あたり **2本**
+    (円の両側)である。中間帯鉄筋を配置する場合はその分を ``legs`` に含める。
+    """
+
+    diameter_mm: float  # 呼び径 (mm)
+    spacing_mm: float  # 部材軸方向の間隔 s (mm)
+    legs: int = 2  # せん断ひび割れを横切る本数
+    angle_deg: float = 90.0  # 部材軸方向となす角度 θ(帯鉄筋は 90°)
+
+    def validated(self) -> "StirrupLayout":
+        if self.diameter_mm <= 0 or self.spacing_mm <= 0:
+            raise ValueError("帯鉄筋の径・間隔は正の値である必要があります")
+        if self.legs < 1:
+            raise ValueError("帯鉄筋の本数は 1 以上である必要があります")
+        if not 0.0 < self.angle_deg <= 90.0:
+            raise ValueError("帯鉄筋の角度 θ は 0〜90° の範囲である必要があります")
+        return self
+
+    @property
+    def bar_area(self) -> float:
+        """鉄筋1本の断面積 (mm2)"""
+        return math.pi * self.diameter_mm**2 / 4.0
+
+    @property
+    def area(self) -> float:
+        """間隔 s ごとに配置される斜引張鉄筋の断面積 Aw (mm2)"""
+        return self.legs * self.bar_area
+
+    @property
+    def aw_per_spacing(self) -> float:
+        """Aw / s (mm2/mm)。必要量との比較に用いる。"""
+        return self.area / self.spacing_mm
+
+
+@dataclass(frozen=True)
 class RcStressResult:
     neutral_axis_y: float  # 中立軸の y 座標 (m)
     compression_depth: float  # 圧縮縁からの中立軸深さ x (m)

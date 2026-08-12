@@ -49,12 +49,15 @@ from dataclasses import dataclass, field
 
 from core.models.loads import LoadCase
 from core.models.pile import PileSpec, PileType
-from core.section.rc import RebarLayout
+from core.section.rc import RebarLayout, StirrupLayout
 from core.standards import (
+    REBAR_YIELD_POINT,
+    SHEAR_CC_FOUNDATION,
     SHEAR_CE_BY_DEPTH,
     SHEAR_CN_MAX,
     SHEAR_CN_MIN,
     SHEAR_CPT_BY_RATIO,
+    SHEAR_REBAR_YIELD_CAP,
     STRESS_INCREASE,
     TAU_A1_CONCRETE,
     TAU_A2_CONCRETE,
@@ -165,6 +168,102 @@ def cn_factor(diameter: float, axial: float, moment: float) -> float:
 
 
 @dataclass(frozen=True)
+class ShearCapacity:
+    """レベル2地震時の断面のせん断耐力(道示Ⅳ(H24) 5.2.3、式(5.2.1))。
+
+        Ps = Sc + Ss
+        Sc = cc・ce・cpt・cN・τc・b・d
+        Ss = Aw・σsy・d・(sinθ + cosθ) /(1.15 s)
+
+    単位はいずれも kN。
+    """
+
+    sc: float  # コンクリートの負担するせん断耐力 (kN)
+    ss: float  # 斜引張鉄筋の負担するせん断耐力 (kN)
+    width: float  # b (m)
+    effective_depth: float  # d (m)
+    pt: float  # 軸方向引張鉄筋比 (%)
+    cc: float
+    ce: float
+    cpt: float
+    cn: float
+    tau_c: float  # 表-5.2.1 の値 (N/mm2)
+    sigma_sy: float | None  # 用いた斜引張鉄筋の降伏点 (N/mm2、345 で頭打ち)
+
+    @property
+    def total(self) -> float:
+        """せん断耐力 Ps (kN)。"""
+        return self.sc + self.ss
+
+
+def shear_capacity_level2(
+    pile: PileSpec,
+    rebar: RebarLayout,
+    fck: int,
+    axial: float,
+    moment: float,
+    stirrup: StirrupLayout | None = None,
+    rebar_grade: str = "SD345",
+) -> ShearCapacity:
+    """レベル2地震時のせん断耐力 Ps(道示Ⅳ 5.2.3)。
+
+    ``cc`` は荷重の正負交番作用の補正係数で、**橋台及び基礎については 1**
+    としてよい(原典 5.2.3)。``cN`` は「杭のように軸力の作用が明確な部材に
+    おいてのみ考慮する」とされているため、杭では考慮する。
+
+    ``σsy`` は斜引張鉄筋の降伏点だが、**上限を 345 N/mm² とする**
+    (SD390・SD490 を用いる場合の適用性が未検証のため)。
+
+    ``stirrup`` を与えない場合は Ss = 0(コンクリートのみ)となる。
+    """
+    if pile.pile_type != PileType.CAST_IN_PLACE:
+        raise ValueError(
+            f"{pile.pile_type.value}のせん断耐力は未実装です"
+            "(円形RC断面の規定を用いるため場所打ち杭のみ対応)"
+        )
+    if fck not in TAU_C_CONCRETE:
+        raise ValueError(
+            f"σck={fck} の τc が未定義です。対応値: {sorted(TAU_C_CONCRETE)}"
+        )
+    b = equivalent_square_width(pile.diameter)
+    d = effective_depth(pile.diameter, rebar)
+    pt = tensile_rebar_ratio(pile.diameter, rebar, b, d)
+    ce = ce_factor(d)
+    cpt = cpt_factor(pt)
+    cn = cn_factor(pile.diameter, axial, moment)
+    tau_c = TAU_C_CONCRETE[fck]
+
+    # N → kN。b・d は mm に換算する
+    sc = (
+        SHEAR_CC_FOUNDATION * ce * cpt * cn * tau_c
+        * (b * 1000.0) * (d * 1000.0) / 1000.0
+    )
+
+    ss = 0.0
+    sigma_sy = None
+    if stirrup is not None:
+        stirrup.validated()
+        if rebar_grade not in REBAR_YIELD_POINT:
+            raise ValueError(
+                f"鉄筋材質 {rebar_grade} の降伏点が未定義です。"
+                f"対応材質: {sorted(REBAR_YIELD_POINT)}"
+            )
+        sigma_sy = min(REBAR_YIELD_POINT[rebar_grade], SHEAR_REBAR_YIELD_CAP)
+        theta = math.radians(stirrup.angle_deg)
+        ss = (
+            stirrup.area * sigma_sy * (d * 1000.0)
+            * (math.sin(theta) + math.cos(theta))
+            / (1.15 * stirrup.spacing_mm)
+            / 1000.0
+        )
+    return ShearCapacity(
+        sc=sc, ss=ss, width=b, effective_depth=d, pt=pt,
+        cc=SHEAR_CC_FOUNDATION, ce=ce, cpt=cpt, cn=cn,
+        tau_c=tau_c, sigma_sy=sigma_sy,
+    )
+
+
+@dataclass(frozen=True)
 class ShearCheck:
     """1項目の照査結果(応力度の単位は N/mm2)。"""
 
@@ -175,6 +274,28 @@ class ShearCheck:
     @property
     def ratio(self) -> float:
         return abs(self.stress) / self.allowable if self.allowable else math.inf
+
+    @property
+    def ok(self) -> bool:
+        return self.ratio <= 1.0
+
+    @property
+    def judgement(self) -> str:
+        return "OK" if self.ok else "NG"
+
+
+@dataclass(frozen=True)
+class StirrupCheck:
+    """斜引張鉄筋量の照査(必要量 vs 配置量)。単位は mm2/mm。"""
+
+    required: float  # 必要量 Aw/s(式(5.1.3))
+    provided: float  # 配置量 Aw/s
+    sigma_sa: float  # 用いた許容引張応力度 (N/mm2)
+    angle_deg: float
+
+    @property
+    def ratio(self) -> float:
+        return self.required / self.provided if self.provided else math.inf
 
     @property
     def ok(self) -> bool:
@@ -217,10 +338,14 @@ class ShearResult:
     # 斜引張鉄筋の許容引張応力度 (N/mm2)。表-4.3.1 の「上記以外」の区分
     # (軸方向鉄筋とは異なる)。材質が不明な場合は None。
     stirrup_sigma_sa: float | None = None
+    # 帯鉄筋を入力した場合の必要量 vs 配置量の照査
+    stirrup: StirrupCheck | None = None
 
     @property
     def required_aw_per_spacing(self) -> float | None:
         """必要な斜引張鉄筋量 Aw/s (mm2/mm)。帯鉄筋(θ = 90°)として。"""
+        if self.stirrup is not None:
+            return self.stirrup.required
         if self.stirrup_sigma_sa is None:
             return None
         return self.required_stirrup_ratio(self.stirrup_sigma_sa)
@@ -232,6 +357,8 @@ class ShearResult:
 
     @property
     def all_ok(self) -> bool:
+        if self.stirrup is not None and not self.stirrup.ok:
+            return False
         return all(c.ok for c in self.checks)
 
     @property
@@ -277,6 +404,7 @@ def check_shear(
     moment: float,
     axial: float,
     rebar_grade: str | None = None,
+    stirrup: StirrupLayout | None = None,
 ) -> ShearResult:
     """場所打ち杭1断面のせん断照査(道示Ⅳ 5.1.3)。
 
@@ -341,6 +469,29 @@ def check_shear(
             rebar_grade, case, underwater=True, increase=increase,
             axial_rebar=False,
         )
+
+    stirrup_check = None
+    if stirrup is not None:
+        if stirrup_sigma_sa is None:
+            raise ValueError(
+                "帯鉄筋の照査には鉄筋材質(rebar_grade)の指定が必要です"
+            )
+        stirrup.validated()
+        result = ShearResult(
+            depth=depth, shear=shear, moment=moment, axial=axial,
+            width=b, effective_depth=d, tau_m=tau_m, pt=pt,
+            ce=ce, cpt=cpt, cn=cn, tau_a1=tau_a1, tau_a2=tau_a2,
+            seismic=case.is_seismic, checks=checks,
+            stirrup_sigma_sa=stirrup_sigma_sa,
+        )
+        stirrup_check = StirrupCheck(
+            required=result.required_stirrup_ratio(
+                stirrup_sigma_sa, stirrup.angle_deg
+            ),
+            provided=stirrup.aw_per_spacing,
+            sigma_sa=stirrup_sigma_sa,
+            angle_deg=stirrup.angle_deg,
+        )
     return ShearResult(
         depth=depth,
         shear=shear,
@@ -358,4 +509,5 @@ def check_shear(
         seismic=case.is_seismic,
         checks=checks,
         stirrup_sigma_sa=stirrup_sigma_sa,
+        stirrup=stirrup_check,
     )

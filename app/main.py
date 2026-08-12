@@ -33,7 +33,7 @@ from core.models import (
 from core.report.excel import build_workbook
 from core.report.markdown import build_report
 from core.section.checks import MaterialSpec
-from core.section.rc import RebarLayout
+from core.section.rc import RebarLayout, StirrupLayout
 from core.soil.liquefaction import SoilReduction, assess_liquefaction
 from core.standards import (
     EC_CONCRETE,
@@ -412,6 +412,24 @@ def _render_level2(result) -> None:
     if mu is not None:
         st.markdown(f"**応答塑性率 μr = {mu:.2f}**")
 
+    if result.shear_capacity is not None:
+        cap = result.shear_capacity
+        st.markdown("**杭体のせん断耐力(道示Ⅳ 5.2.3)**")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Sc(コンクリート)", f"{cap.sc:,.0f} kN")
+        c2.metric("Ss(斜引張鉄筋)", f"{cap.ss:,.0f} kN")
+        c3.metric("Ps = Sc + Ss", f"{cap.total:,.0f} kN")
+        st.caption(
+            f"Sc = cc·ce·cpt·cN·τc·b·d(cc = {cap.cc:g}、ce = {cap.ce:.3f}、"
+            f"cpt = {cap.cpt:.3f}、cN = {cap.cn:.3f}、τc = {cap.tau_c:.2f} N/mm²、"
+            f"b = {cap.width * 1000:,.0f} mm、d = {cap.effective_depth * 1000:,.0f} mm)"
+            + (
+                f"。Ss は σsy = {cap.sigma_sy:.0f} N/mm²(345 で頭打ち)"
+                if cap.sigma_sy is not None
+                else "。帯鉄筋が未入力のため Ss = 0"
+            )
+        )
+
     if result.checks:
         st.markdown("**照査結果**")
         st.dataframe(
@@ -580,7 +598,27 @@ def _render_stress_checks(case) -> None:
             f"cpt = {sh.cpt:.3f}(pt = {sh.pt:.3f}%)、cN = {sh.cn:.3f}"
             + ("。地震時は τa1×1.5 の代わりに τc を用いている" if sh.seismic else "")
         )
-        if sh.needs_stirrup:
+        if sh.stirrup is not None:
+            st_check = sh.stirrup
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "照査項目": "斜引張鉄筋量 Aw/s",
+                            "必要 (mm²/mm)": round(st_check.required, 4),
+                            "配置 (mm²/mm)": round(st_check.provided, 4),
+                            "比": round(st_check.ratio, 3),
+                            "判定": st_check.judgement,
+                        }
+                    ]
+                ),
+                width="stretch",
+            )
+            st.caption(
+                f"σsa = {st_check.sigma_sa:.0f} N/mm²(表-4.3.1 の「上記以外」。"
+                f"軸方向鉄筋とは区分が異なる)、θ = {st_check.angle_deg:.0f}°"
+            )
+        if sh.needs_stirrup and sh.stirrup is None:
             aw = sh.required_aw_per_spacing
             msg = (
                 f"τm = {sh.tau_m:.3f} が τa1 = {sh.tau_a1:.3f} N/mm² を超えるため"
@@ -980,6 +1018,19 @@ def main() -> None:
                 "かぶり (mm)", 30.0, 500.0, value=125.0, step=5.0, key=f"rc_{nonce}",
                 help="断面縁から鉄筋中心までの距離",
             )
+            stirrup_dia = st.number_input(
+                "帯鉄筋 径 (mm)", 0.0, 60.0, value=13.0, step=1.0,
+                key=f"sd_{nonce}",
+                help=(
+                    "斜引張鉄筋(帯鉄筋)の呼び径。0 なら未入力として扱い、"
+                    "せん断は必要量の提示のみ(レベル2は Ss = 0)になる。"
+                ),
+            )
+            stirrup_spacing = st.number_input(
+                "帯鉄筋 間隔 s (mm)", 0.0, 1000.0, value=150.0, step=10.0,
+                key=f"ss_{nonce}",
+                help="部材軸方向の間隔。円形断面ではひび割れを横切る本数を 2 本とする",
+            )
             effective_prestress = st.number_input(
                 "有効プレストレス σce (N/mm²)", 0.0, 20.0,
                 value=0.0, step=0.1, key=f"pre_{nonce}",
@@ -1118,6 +1169,11 @@ def main() -> None:
         width_x=fw_x, width_y=fw_y, height=fh, embedment=embedment
     )
 
+    stirrup_layout = (
+        StirrupLayout(diameter_mm=stirrup_dia, spacing_mm=stirrup_spacing)
+        if stirrup_dia > 0 and stirrup_spacing > 0
+        else None
+    )
     material_spec = MaterialSpec(
         fck=int(fck),
         rebar_grade=rebar_grade,
@@ -1268,6 +1324,8 @@ def main() -> None:
                     steel_grade=steel_grade,
                     structure_type=StructureType(structure_type),
                     rebar_grade=rebar_grade,
+                    rebar=material_spec.rebar,
+                    stirrup=stirrup_layout,
                     allowable_ductility=l2_mua if l2_mua > 0 else None,
                     allowable_displacement=l2_da if l2_da > 0 else None,
                     e0_method=E0Method(e0_method),

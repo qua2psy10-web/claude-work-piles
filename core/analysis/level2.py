@@ -55,6 +55,8 @@ from core.capacity.springs import (
 from core.models.loads import LoadCase
 from core.models.pile import Footing, PileArrangement, PileSpec, PileType
 from core.models.soil import SoilProfile
+from core.section.rc import RebarLayout, StirrupLayout
+from core.section.shear import ShearCapacity, shear_capacity_level2
 from core.soil.liquefaction import SoilReduction
 from core.standards import (
     ALLOWABLE_DUCTILITY_CIP_HIGH_GRADE,
@@ -225,6 +227,10 @@ class Level2Result:
     allowable_rotation: float | None = ALLOWABLE_FOOTING_ROTATION
     soil_reaction: SoilReactionCheck | None = None  # pHU との突合(診断)
     notes: list[str] = field(default_factory=list)
+    # レベル2のせん断耐力 Ps(道示Ⅳ 5.2.3)。場所打ち杭で軸方向鉄筋を
+    # 入力した場合のみ算定する。
+    shear_capacity: "ShearCapacity | None" = None
+    response_shear: float | None = None  # 設計レベル2荷重時の杭頭せん断力 (kN)
 
     @property
     def yielded(self) -> bool:
@@ -280,6 +286,19 @@ class Level2Result:
                     capacity=self.allowable_rotation,
                     unit="rad",
                     note="過大な残留変位を生じさせないための規定(0.02 rad = 1/50)",
+                )
+            )
+        if self.shear_capacity is not None and self.response_shear is not None:
+            results.append(
+                Level2Check(
+                    name="杭体のせん断耐力",
+                    demand=abs(self.response_shear),
+                    capacity=self.shear_capacity.total,
+                    unit="kN",
+                    note=(
+                        f"Ps = Sc + Ss = {self.shear_capacity.sc:.0f} + "
+                        f"{self.shear_capacity.ss:.0f} kN(道示Ⅳ 5.2.3)"
+                    ),
                 )
             )
         if self.allowable_displacement is not None:
@@ -953,6 +972,8 @@ def run_level2(
     corrosion_mm: float = CORROSION_ALLOWANCE_MM,
     structure_type: StructureType = StructureType.PIER,
     rebar_grade: str | None = None,
+    rebar: "RebarLayout | None" = None,
+    stirrup: "StirrupLayout | None" = None,
     allowable_ductility: float | None = None,
     allowable_displacement: float | None = None,
     allowable_rotation: float | None = ALLOWABLE_FOOTING_ROTATION,
@@ -1105,6 +1126,9 @@ def run_level2(
         max_factor=max_factor,
         steps=steps,
     )
+    capacity, response_shear, shear_notes = _level2_shear(
+        pile, rebar, stirrup, fck, rebar_grade or "SD345", result
+    )
     return Level2Result(
         steps=result.steps,
         yield_point=result.yield_point,
@@ -1113,8 +1137,48 @@ def run_level2(
         allowable_displacement=result.allowable_displacement,
         allowable_rotation=result.allowable_rotation,
         soil_reaction=soil_reaction,
-        notes=extra_notes + result.notes,
+        notes=extra_notes + shear_notes + result.notes,
+        shear_capacity=capacity,
+        response_shear=response_shear,
     )
+
+
+def _level2_shear(
+    pile: PileSpec,
+    rebar: "RebarLayout | None",
+    stirrup: "StirrupLayout | None",
+    fck: int,
+    rebar_grade: str,
+    result: Level2Result,
+) -> tuple["ShearCapacity | None", float | None, list[str]]:
+    """レベル2のせん断耐力 Ps と、設計レベル2荷重時の杭頭せん断力。
+
+    場所打ち杭で軸方向鉄筋が入力されている場合のみ算定する。せん断力は
+    最も厳しい杭(押込み軸力が最大の杭)の杭頭せん断力とする。
+    """
+    if pile.pile_type != PileType.CAST_IN_PLACE:
+        return None, None, []
+    if rebar is None:
+        return None, None, [
+            "場所打ち杭の軸方向鉄筋が未入力のため、レベル2のせん断耐力"
+            "(道示Ⅳ 5.2.3)を照査していない。"
+        ]
+    if result.response is None:
+        return None, None, []
+    critical = max(result.response.reactions, key=lambda r: r.axial)
+    capacity = shear_capacity_level2(
+        pile, rebar, fck,
+        axial=critical.axial, moment=critical.moment,
+        stirrup=stirrup, rebar_grade=rebar_grade,
+    )
+    notes: list[str] = []
+    if stirrup is None:
+        notes.append(
+            "帯鉄筋が未入力のため、レベル2のせん断耐力はコンクリートの負担分 Sc "
+            "のみで評価している(Ss = 0)。実際の配筋を入力すると Ss を"
+            "算入できる。"
+        )
+    return capacity, critical.shear, notes
 
 
 def _soil_reaction_diagnosis(

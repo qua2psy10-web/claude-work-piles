@@ -428,7 +428,26 @@ def _case_section(case: CaseResult) -> str:
                 ],
             )
         )
-        if sh.needs_stirrup:
+        if sh.stirrup is not None:
+            st_check = sh.stirrup
+            s.append(
+                "\n"
+                + _table(
+                    ["照査項目", "必要 (mm²/mm)", "配置 (mm²/mm)", "比", "判定"],
+                    [[
+                        "斜引張鉄筋量 Aw/s",
+                        _num(st_check.required, 4),
+                        _num(st_check.provided, 4),
+                        f"{st_check.ratio:.3f}",
+                        st_check.judgement,
+                    ]],
+                )
+            )
+            s.append(
+                f"\nσsa = {st_check.sigma_sa:.0f} N/mm²(表-4.3.1 の「上記以外」。"
+                f"軸方向鉄筋とは区分が異なる)、θ = {st_check.angle_deg:.0f}°\n"
+            )
+        if sh.needs_stirrup and sh.stirrup is None:
             aw = sh.required_aw_per_spacing
             s.append(
                 f"\n> **斜引張鉄筋が必要**: τm = {sh.tau_m:.3f} が"
@@ -567,8 +586,29 @@ def _level2_section(result: Level2Result) -> str:
         s.append("\n### 7.1 応答値\n")
         s.append(_table(["項目", "値"], rows))
 
+    if result.shear_capacity is not None:
+        cap = result.shear_capacity
+        s.append("\n### 7.2 杭体のせん断耐力(道示Ⅳ 5.2.3)\n")
+        s.append(
+            "\nPs = Sc + Ss、Sc = cc・ce・cpt・cN・τc・b・d、"
+            "Ss = Aw・σsy・d・(sinθ + cosθ)/(1.15 s)\n\n"
+            f"- cc = {cap.cc:g}(橋台及び基礎は 1)、ce = {cap.ce:.3f}、"
+            f"cpt = {cap.cpt:.3f}(pt = {cap.pt:.3f}%)、cN = {cap.cn:.3f}\n"
+            f"- τc = {cap.tau_c:.2f} N/mm²(表-5.2.1)、"
+            f"b = {cap.width * 1000:,.0f} mm、d = {cap.effective_depth * 1000:,.0f} mm\n"
+            f"- **Sc = {_num(cap.sc, 1)} kN**、**Ss = {_num(cap.ss, 1)} kN**、"
+            f"**Ps = {_num(cap.total, 1)} kN**\n"
+        )
+        if cap.sigma_sy is not None:
+            s.append(
+                f"- 斜引張鉄筋の降伏点 σsy = {cap.sigma_sy:.0f} N/mm²"
+                "(345 N/mm² で頭打ち)\n"
+            )
+        else:
+            s.append("- 帯鉄筋が未入力のため Ss = 0(コンクリートのみ)\n")
+
     if result.checks:
-        s.append("\n### 7.2 照査結果\n")
+        s.append("\n### 7.3 照査結果\n")
         s.append(
             _table(
                 ["照査項目", "応答値", "制限値", "単位", "比", "判定"],

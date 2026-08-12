@@ -402,3 +402,229 @@ def test_excel_report_includes_the_shear_table():
     labels = [ws.cell(row=r, column=1).value for r in range(1, ws.max_row + 1)]
     assert any(v and "せん断照査" in str(v) for v in labels)
     assert any(v and "有効高 d" in str(v) for v in labels)
+
+
+# --- 帯鉄筋(必要量 vs 配置量)------------------------------------------------
+
+from core.section.rc import StirrupLayout  # noqa: E402
+from core.section.shear import shear_capacity_level2  # noqa: E402
+
+STIRRUP = StirrupLayout(diameter_mm=13.0, spacing_mm=150.0)
+
+
+def test_stirrup_layout_geometry():
+    """Aw = legs × 1本の断面積、Aw/s は間隔で割った値。"""
+    assert STIRRUP.bar_area == pytest.approx(math.pi * 13.0**2 / 4.0)
+    assert STIRRUP.area == pytest.approx(2 * STIRRUP.bar_area)
+    assert STIRRUP.aw_per_spacing == pytest.approx(STIRRUP.area / 150.0)
+    with pytest.raises(ValueError, match="径・間隔"):
+        StirrupLayout(diameter_mm=0.0, spacing_mm=150.0).validated()
+    with pytest.raises(ValueError, match="角度"):
+        StirrupLayout(diameter_mm=13.0, spacing_mm=150.0, angle_deg=120.0).validated()
+
+
+def test_stirrup_check_compares_required_against_provided():
+    """帯鉄筋を与えると必要量との比較まで行うこと。"""
+    # S = 450 kN なら D13@150(2本)で足りる
+    result = check_shear(
+        CIP, REBAR, 24, LoadCase.PERMANENT, 0.0, 450.0, 800.0, 1500.0,
+        rebar_grade="SD345", stirrup=STIRRUP,
+    )
+    check = result.stirrup
+    assert check is not None
+    assert result.needs_stirrup  # τa1 は超えている
+    assert check.provided == pytest.approx(STIRRUP.aw_per_spacing)
+    assert check.required == pytest.approx(
+        result.required_stirrup_ratio(check.sigma_sa)
+    )
+    # 場所打ち杭・常時なので σsa は水中部材の 160
+    assert check.sigma_sa == pytest.approx(160.0)
+    # この配筋なら足りている
+    assert check.ok and result.all_ok
+
+
+def test_insufficient_stirrup_makes_the_case_ng():
+    """配置量が必要量に満たなければ NG になること(τa2 は満たしていても)。"""
+    result = check_shear(
+        CIP, REBAR, 24, LoadCase.PERMANENT, 0.0, 900.0, 800.0, 1500.0,
+        rebar_grade="SD345", stirrup=STIRRUP,
+    )
+    assert result.stirrup is not None
+    assert not result.stirrup.ok
+    assert not result.all_ok
+    # τa2 のほうは満たしている(NG の原因は鉄筋量)
+    assert all(c.ok for c in result.checks)
+
+
+def test_stirrup_check_requires_a_rebar_grade():
+    with pytest.raises(ValueError, match="鉄筋材質"):
+        check_shear(
+            CIP, REBAR, 24, LoadCase.PERMANENT, 0.0, 900.0, 800.0, 1500.0,
+            stirrup=STIRRUP,
+        )
+
+
+def test_seismic_stirrup_uses_the_other_category_not_axial_rebar():
+    """斜引張鉄筋の地震時の基本値は「上記以外」の 200(軸方向鉄筋ではない)。"""
+    result = check_shear(
+        CIP, REBAR, 24, LoadCase.LEVEL1_EQ, 0.0, 900.0, 800.0, 1500.0,
+        rebar_grade="SD490", stirrup=STIRRUP,
+    )
+    # SD490 でも斜引張鉄筋は 200 × 1.50 = 300(軸方向鉄筋なら 290×1.5 = 435)
+    assert result.stirrup.sigma_sa == pytest.approx(300.0)
+
+
+# --- レベル2のせん断耐力(道示Ⅳ 5.2.3)---------------------------------------
+
+
+def test_shear_capacity_formula():
+    """Ps = Sc + Ss。Sc = cc·ce·cpt·cN·τc·b·d、Ss = Aw·σsy·d·(sinθ+cosθ)/(1.15s)。"""
+    cap = shear_capacity_level2(
+        CIP, REBAR, 24, axial=1500.0, moment=2000.0, stirrup=STIRRUP
+    )
+    b_mm = cap.width * 1000.0
+    d_mm = cap.effective_depth * 1000.0
+    assert cap.cc == 1.0  # 基礎は cc = 1
+    assert cap.sc == pytest.approx(
+        cap.cc * cap.ce * cap.cpt * cap.cn * cap.tau_c * b_mm * d_mm / 1000.0
+    )
+    assert cap.ss == pytest.approx(
+        STIRRUP.area * 345.0 * d_mm * 1.0 / (1.15 * STIRRUP.spacing_mm) / 1000.0
+    )
+    assert cap.total == pytest.approx(cap.sc + cap.ss)
+
+
+def test_shear_capacity_caps_the_stirrup_yield_at_345():
+    """斜引張鉄筋の降伏点は SD390・SD490 でも 345 で頭打ち(道示Ⅳ 5.2.3)。"""
+    base = shear_capacity_level2(
+        CIP, REBAR, 24, 1500.0, 2000.0, stirrup=STIRRUP, rebar_grade="SD345"
+    )
+    high = shear_capacity_level2(
+        CIP, REBAR, 24, 1500.0, 2000.0, stirrup=STIRRUP, rebar_grade="SD490"
+    )
+    assert base.sigma_sy == 345.0
+    assert high.sigma_sy == 345.0
+    assert high.ss == pytest.approx(base.ss)
+
+
+def test_shear_capacity_without_stirrup_is_concrete_only():
+    cap = shear_capacity_level2(CIP, REBAR, 24, 1500.0, 2000.0)
+    assert cap.ss == 0.0
+    assert cap.sigma_sy is None
+    assert cap.total == pytest.approx(cap.sc)
+
+
+def test_shear_capacity_uses_tau_c_not_tau_a1():
+    """レベル2は τc(表-5.2.1)を用いる。τa1 の 1.5 倍ではない。"""
+    cap = shear_capacity_level2(CIP, REBAR, 24, 1500.0, 2000.0)
+    assert cap.tau_c == pytest.approx(TAU_C_CONCRETE[24])
+    assert cap.tau_c != pytest.approx(TAU_A1_CONCRETE[24] * 1.5)
+
+
+def test_level2_reports_the_shear_capacity_check():
+    """run_level2 がせん断耐力の照査を出すこと。"""
+    from core.analysis.level2 import run_level2
+    from core.models import Footing, PileArrangement, SoilLayer, SoilProfile, SoilType
+
+    profile = SoilProfile(
+        layers=[
+            SoilLayer(name="As", soil_type=SoilType.SAND, thickness=10.0,
+                      n_value=15.0, gamma_t=18.0, gamma_sat=19.0),
+            SoilLayer(name="Ds", soil_type=SoilType.SAND, thickness=25.0,
+                      n_value=45.0, gamma_t=19.0, gamma_sat=20.0),
+        ],
+        gwl=2.0,
+    )
+    kwargs = dict(
+        pile=CIP,
+        arrangement=PileArrangement(nx=3, ny=3, spacing_x=2.5, spacing_y=2.5),
+        footing=Footing(width_x=8.0, width_y=8.0, height=1.5, embedment=2.0),
+        profile=profile,
+        v_load=9000.0, h_load=4000.0, m_load=12000.0,
+        fck=24, rebar=REBAR, max_factor=1.0, steps=10,
+    )
+    with_stirrup = run_level2(**kwargs, stirrup=STIRRUP)
+    without = run_level2(**kwargs)
+
+    assert with_stirrup.shear_capacity is not None
+    assert with_stirrup.response_shear is not None
+    assert any("せん断耐力" in c.name for c in with_stirrup.checks)
+    # 帯鉄筋があるぶん耐力が大きい
+    assert with_stirrup.shear_capacity.total > without.shear_capacity.total
+    assert without.shear_capacity.ss == 0.0
+    assert any("帯鉄筋が未入力" in n for n in without.notes)
+
+
+def test_level2_skips_the_shear_check_without_rebar():
+    from core.analysis.level2 import run_level2
+    from core.models import Footing, PileArrangement, SoilLayer, SoilProfile, SoilType
+
+    profile = SoilProfile(
+        layers=[
+            SoilLayer(name="As", soil_type=SoilType.SAND, thickness=10.0,
+                      n_value=15.0, gamma_t=18.0, gamma_sat=19.0),
+            SoilLayer(name="Ds", soil_type=SoilType.SAND, thickness=25.0,
+                      n_value=45.0, gamma_t=19.0, gamma_sat=20.0),
+        ],
+        gwl=2.0,
+    )
+    result = run_level2(
+        CIP,
+        PileArrangement(nx=3, ny=3, spacing_x=2.5, spacing_y=2.5),
+        Footing(width_x=8.0, width_y=8.0, height=1.5, embedment=2.0),
+        profile,
+        v_load=9000.0, h_load=4000.0, m_load=12000.0,
+        fck=24, max_factor=1.0, steps=10,
+    )
+    assert result.shear_capacity is None
+    assert any("軸方向鉄筋が未入力" in n for n in result.notes)
+
+
+def test_reports_include_the_stirrup_and_level2_shear():
+    """帯鉄筋の照査とレベル2のせん断耐力が計算書に出ること。"""
+    from core.analysis.level2 import run_level2
+    from core.analysis.stability import analyze
+    from core.models import (
+        DesignProject,
+        Footing,
+        FootingLoads,
+        PileArrangement,
+        SoilLayer,
+        SoilProfile,
+        SoilType,
+    )
+    from core.report.markdown import build_report
+    from core.section.checks import MaterialSpec
+
+    profile = SoilProfile(
+        layers=[
+            SoilLayer(name="As", soil_type=SoilType.SAND, thickness=10.0,
+                      n_value=15.0, gamma_t=18.0, gamma_sat=19.0),
+            SoilLayer(name="Ds", soil_type=SoilType.SAND, thickness=25.0,
+                      n_value=45.0, gamma_t=19.0, gamma_sat=20.0),
+        ],
+        gwl=2.0,
+    )
+    arrangement = PileArrangement(nx=3, ny=3, spacing_x=2.5, spacing_y=2.5)
+    footing = Footing(width_x=8.0, width_y=8.0, height=1.5, embedment=2.0)
+    project = DesignProject(
+        pile=CIP, arrangement=arrangement, footing=footing,
+        soil_profile=profile,
+        loads=[FootingLoads(case=LoadCase.LEVEL1_EQ, v=9000.0, h=3000.0, m=8000.0)],
+    )
+    report = analyze(
+        CIP, arrangement, footing, profile, project.loads, fck=24,
+        material=MaterialSpec(fck=24, rebar=REBAR, stirrup=STIRRUP),
+    )
+    level2 = run_level2(
+        CIP, arrangement, footing, profile,
+        v_load=9000.0, h_load=4000.0, m_load=12000.0,
+        fck=24, rebar=REBAR, stirrup=STIRRUP, max_factor=1.0, steps=10,
+    )
+    text = build_report(project, report, level2=level2)
+    assert "斜引張鉄筋量 Aw/s" in text
+    assert "杭体のせん断耐力" in text
+    assert "Ps = Sc + Ss" in text
+    assert "345 N/mm² で頭打ち" in text
+    # L1 側は必要量と配置量の両方が出る
+    assert report.cases[0].shear.stirrup is not None
