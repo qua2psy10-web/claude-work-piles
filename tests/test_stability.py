@@ -94,8 +94,8 @@ def test_unimplemented_stress_check_is_skipped_with_note():
     from core.section.rc import RebarLayout
 
     _, arrangement, footing, profile = sample_inputs()
-    phc = PileSpec(
-        pile_type=PileType.PHC,
+    rc = PileSpec(
+        pile_type=PileType.RC,
         method=ConstructionMethod.DRIVEN,
         diameter=0.6,
         length=18.0,
@@ -105,7 +105,7 @@ def test_unimplemented_stress_check_is_skipped_with_note():
         fck=30, rebar=RebarLayout(count=12, diameter_mm=25.0, cover_mm=60.0)
     )
     loads = [FootingLoads(case=LoadCase.PERMANENT, v=3000.0, h=200.0, m=800.0)]
-    report = analyze(phc, arrangement, footing, profile, loads, fck=30, material=material)
+    report = analyze(rc, arrangement, footing, profile, loads, fck=30, material=material)
 
     case = report.cases[0]
     # 支持力・変位の照査は行われている
@@ -114,9 +114,34 @@ def test_unimplemented_stress_check_is_skipped_with_note():
     assert case.stress_head is None
     assert case.stress_max is None
     assert report.notes
-    assert any("PHC杭" in note for note in report.notes)
+    assert any("RC杭" in note for note in report.notes)
     # 杭頭結合部の照査は杭種によらず行われる
     assert case.pile_head is not None
+
+
+def test_phc_stress_check_runs_with_young_modulus_note():
+    """PHC杭は応力度照査を行うが、σck=80 の Ec が未照合である旨を注記する。"""
+    from core.section.checks import MaterialSpec
+
+    _, arrangement, footing, profile = sample_inputs()
+    phc = PileSpec(
+        pile_type=PileType.PHC,
+        method=ConstructionMethod.DRIVEN,
+        diameter=0.6,
+        length=18.0,
+        concrete_thickness=90.0,
+    )
+    material = MaterialSpec(fck=30, effective_prestress=8.0)
+    loads = [FootingLoads(case=LoadCase.PERMANENT, v=3000.0, h=200.0, m=800.0)]
+    report = analyze(phc, arrangement, footing, profile, loads, fck=30, material=material)
+
+    case = report.cases[0]
+    assert case.stress_head is not None
+    assert case.stress_max is not None
+    assert {c.name for c in case.stress_head.checks} >= {
+        "軸圧縮応力度", "曲げ圧縮応力度"
+    }
+    assert any("ヤング係数" in note for note in report.notes)
 
 
 def test_implemented_pile_type_has_no_notes():

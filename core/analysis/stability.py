@@ -13,7 +13,7 @@ from core.capacity.negative_friction import (
 from core.capacity.section import pile_section
 from core.capacity.springs import LateralSprings, PileSection, axial_spring, lateral_springs
 from core.models.loads import FootingLoads, LoadCase
-from core.models.pile import Footing, PileArrangement, PileSpec
+from core.models.pile import Footing, PileArrangement, PileSpec, PileType
 from core.models.soil import SoilProfile
 from core.section.checks import MaterialSpec, PileStressResult, check_section
 from core.section.pile_head import PileHeadResult, check_pile_head
@@ -123,6 +123,13 @@ def analyze(
     delta_a = allowable_displacement(pile.diameter)
 
     notes: list[str] = []
+    if pile.pile_type in (PileType.PHC, PileType.SC):
+        notes.append(
+            f"{pile.pile_type.value}の標準である σck = 80 N/mm² のヤング係数は"
+            "未照合のため、断面剛性 EI には入力した σck の Ec を用いている"
+            "(断面力・変位に影響する)。許容応力度は既製コンクリート杭として"
+            "規定された値を用いており、σck の入力値には依存しない。"
+        )
     cases: list[CaseResult] = []
     for load in loads:
         springs = lateral_springs(

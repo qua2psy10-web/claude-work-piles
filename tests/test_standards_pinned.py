@@ -354,3 +354,42 @@ def test_stress_increase_matches_safety_factor_cases():
     """許容応力度の割増と支持力の安全率は同じ荷重ケースを扱うこと。"""
     assert set(st.STRESS_INCREASE) == set(st.SAFETY_FACTORS_PUSH)
     assert set(st.STRESS_INCREASE) == set(st.SAFETY_FACTORS_PULL)
+
+
+def test_precast_concrete_allowable_pinned():
+    """既製コンクリート杭の許容応力度(提供解説資料により照合済み)。"""
+    expected = {
+        # 杭種: (σck, 曲げ圧縮, 軸圧縮, せん断, 曲げ引張)
+        "RC杭": (40.0, 13.5, 11.5, 0.36, None),
+        "PHC杭": (80.0, 27.0, 23.0, 0.85, 0.0),
+        "SC杭": (80.0, 27.0, 23.0, 0.85, None),
+    }
+    assert set(st.PRECAST_CONCRETE_ALLOWABLE) == set(expected)
+    for name, (fck, bend, axial, shear, tension) in expected.items():
+        a = st.PRECAST_CONCRETE_ALLOWABLE[name]
+        assert (a.fck, a.bending_compression, a.axial_compression, a.shear) == (
+            fck, bend, axial, shear
+        )
+        assert a.bending_tension == tension
+    # 軸圧縮は曲げ圧縮より小さい
+    for a in st.PRECAST_CONCRETE_ALLOWABLE.values():
+        assert a.axial_compression < a.bending_compression
+
+
+def test_phc_bending_tension_table_pinned():
+    """PHC杭の地震時の許容曲げ引張応力度は σce の降順に並ぶこと。"""
+    assert st.PHC_BENDING_TENSION_BY_PRESTRESS == ((7.8, 5.0), (3.9, 3.0))
+    thresholds = [t for t, _ in st.PHC_BENDING_TENSION_BY_PRESTRESS]
+    assert thresholds == sorted(thresholds, reverse=True)
+
+
+def test_h_steel_reference_allowable_is_not_used_for_checks():
+    """H形鋼杭の参考値は照査に用いていないこと(資料の警告による)。"""
+    from core.section.checks import UNIMPLEMENTED_STRESS_CHECK
+    from core.models.pile import PileType
+
+    assert st.H_STEEL_REFERENCE_ALLOWABLE == {
+        "SS400相当": (140.0, 210.0),
+        "SM490相当": (185.0, 277.0),
+    }
+    assert PileType.H_STEEL in UNIMPLEMENTED_STRESS_CHECK

@@ -133,14 +133,100 @@ def test_cast_in_place_requires_rebar():
 
 
 def test_unimplemented_pile_type_raises():
-    phc = PileSpec(
+    rc = PileSpec(
+        pile_type=PileType.RC,
+        method=ConstructionMethod.DRIVEN,
+        diameter=0.6,
+        length=20.0,
+        concrete_thickness=90.0,
+    )
+    with pytest.raises(NotImplementedError):
+        check_section(rc, MATERIAL, LoadCase.PERMANENT, 0.0, 1000.0, 100.0)
+
+
+# --- PHC杭(全断面有効) ---------------------------------------------------
+
+PHC = PileSpec(
+    pile_type=PileType.PHC,
+    method=ConstructionMethod.DRIVEN,
+    diameter=0.6,
+    length=20.0,
+    concrete_thickness=90.0,
+)
+
+
+def _phc_section():
+    """テストの期待値算定に用いる中空断面の A・Z。"""
+    outer, inner = 0.6, 0.6 - 2 * 0.09
+    area = math.pi * (outer**2 - inner**2) / 4.0
+    inertia = math.pi * (outer**4 - inner**4) / 64.0
+    return area, inertia / (outer / 2.0)
+
+
+def test_phc_stress_matches_hand_calculation():
+    area, z = _phc_section()
+    axial, moment = 2000.0, 100.0
+    result = check_section(PHC, MATERIAL, LoadCase.PERMANENT, 0.0, axial, moment)
+
+    sigma_n = axial / area / 1000.0
+    sigma_b = moment / z / 1000.0
+    by_name = {c.name: c for c in result.checks}
+    assert by_name["軸圧縮応力度"].stress == pytest.approx(sigma_n)
+    assert by_name["曲げ圧縮応力度"].stress == pytest.approx(sigma_n + sigma_b)
+    # 圧縮側が卓越しているため引張の照査は現れない
+    assert "曲げ引張応力度" not in by_name
+    assert by_name["軸圧縮応力度"].allowable == pytest.approx(23.0)
+    assert by_name["曲げ圧縮応力度"].allowable == pytest.approx(27.0)
+    assert result.all_ok
+
+
+def test_phc_allowable_compression_is_increased_by_load_case():
+    result = check_section(PHC, MATERIAL, LoadCase.LEVEL1_EQ, 0.0, 2000.0, 100.0)
+    by_name = {c.name: c for c in result.checks}
+    increase = STRESS_INCREASE[LoadCase.LEVEL1_EQ.value]
+    assert by_name["曲げ圧縮応力度"].allowable == pytest.approx(27.0 * increase)
+    assert by_name["軸圧縮応力度"].allowable == pytest.approx(23.0 * increase)
+
+
+def test_phc_permanent_case_allows_no_tension():
+    # 曲げが卓越して引張が生じるケース
+    result = check_section(PHC, MATERIAL, LoadCase.PERMANENT, 0.0, 100.0, 400.0)
+    tension = next(c for c in result.checks if c.name == "曲げ引張応力度")
+    assert tension.stress > 0.0
+    assert tension.allowable == 0.0
+    assert tension.judgement == "NG"
+    assert not result.all_ok
+
+
+def test_phc_seismic_tension_allowable_depends_on_prestress():
+    high = MaterialSpec(effective_prestress=8.0)
+    mid = MaterialSpec(effective_prestress=5.0)
+    low = MaterialSpec(effective_prestress=2.0)
+    for material, expected in ((high, 5.0), (mid, 3.0), (low, 0.0)):
+        result = check_section(
+            PHC, material, LoadCase.LEVEL1_EQ, 0.0, 100.0, 400.0
+        )
+        tension = next(c for c in result.checks if c.name == "曲げ引張応力度")
+        # 地震時の許容曲げ引張応力度には割増しを重ねない
+        assert tension.allowable == pytest.approx(expected)
+
+
+def test_phc_seismic_tension_requires_prestress_input():
+    with pytest.raises(ValueError, match="有効プレストレス"):
+        check_section(PHC, MATERIAL, LoadCase.LEVEL1_EQ, 0.0, 100.0, 400.0)
+    # 引張が生じなければ σce の入力は不要
+    check_section(PHC, MATERIAL, LoadCase.LEVEL1_EQ, 0.0, 2000.0, 100.0)
+
+
+def test_phc_requires_concrete_thickness():
+    thin = PileSpec(
         pile_type=PileType.PHC,
         method=ConstructionMethod.DRIVEN,
         diameter=0.6,
         length=20.0,
     )
-    with pytest.raises(NotImplementedError):
-        check_section(phc, MATERIAL, LoadCase.PERMANENT, 0.0, 1000.0, 100.0)
+    with pytest.raises(ValueError, match="肉厚"):
+        check_section(thin, MATERIAL, LoadCase.PERMANENT, 0.0, 1000.0, 100.0)
 
 
 def test_stress_check_judgement():

@@ -649,9 +649,10 @@ def main() -> None:
         with st.expander("既製杭・H鋼杭の断面(該当杭種のみ使用)"):
             st.caption(
                 "PHC杭・RC杭・SC杭は中空断面のコンクリート肉厚、"
-                "H鋼杭はH形断面の寸法が必要。これらの杭種は断面諸元の算定と"
-                "安定計算はできるが、**杭体の応力度照査は未実装**"
-                "(許容応力度が未照合のため)。"
+                "H鋼杭はH形断面の寸法が必要。**PHC杭は杭体の応力度照査に"
+                "対応済み**(全断面有効。地震時の許容曲げ引張には σce の入力が"
+                "必要)。RC杭・SC杭・H鋼杭は断面諸元の算定と安定計算はできるが、"
+                "**杭体の応力度照査は未実装**。"
             )
             ecol1, ecol2 = st.columns(2)
             with ecol1:
@@ -754,6 +755,15 @@ def main() -> None:
             rebar_cover = st.number_input(
                 "かぶり (mm)", 30.0, 500.0, value=125.0, step=5.0, key=f"rc_{nonce}",
                 help="断面縁から鉄筋中心までの距離",
+            )
+            effective_prestress = st.number_input(
+                "有効プレストレス σce (N/mm²)", 0.0, 20.0,
+                value=0.0, step=0.1, key=f"pre_{nonce}",
+                help=(
+                    "PHC杭のみ使用。地震時の許容曲げ引張応力度が σce で決まる"
+                    "(σce ≥ 7.8 → 5.0、3.9 ≤ σce < 7.8 → 3.0、"
+                    "常時は引張を許さない)。0 のときは未入力として扱う。"
+                ),
             )
             use_nf = st.checkbox(
                 "負の周面摩擦力を検討", value=False, key=f"nf_{nonce}",
@@ -889,6 +899,9 @@ def main() -> None:
             count=int(rebar_count),
             diameter_mm=rebar_dia,
             cover_mm=rebar_cover,
+        ),
+        effective_prestress=(
+            effective_prestress if effective_prestress > 0 else None
         ),
     )
 

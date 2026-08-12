@@ -394,6 +394,64 @@ REMOVED_REBAR_GRADES: frozenset[str] = frozenset({"SD295", "SD295A", "SD295B", "
 # 鋼材の許容軸方向引張応力度 σa (N/mm2)(道示Ⅱ 表-3.2.1 相当)
 SIGMA_A_STEEL: dict[str, float] = {"SKK400": 140.0, "SKK490": 185.0}
 
+
+@dataclass(frozen=True)
+class PrecastConcreteAllowable:
+    """既製コンクリート杭の許容応力度 (N/mm2、常時)。"""
+
+    fck: float  # 設計基準強度
+    bending_compression: float  # 曲げ圧縮応力度
+    axial_compression: float  # 軸圧縮応力度
+    shear: float  # せん断応力度
+    bending_tension: float | None  # 曲げ引張応力度(None = 表に規定なし)
+
+
+# 既製コンクリート杭(RC・PHC・SC)の許容応力度(道示Ⅳ 表4.2.7・表4.2.8 等)
+#
+# 提供解説資料により確認済み。地震時等は荷重組合せに応じた割増しを考慮する。
+PRECAST_CONCRETE_ALLOWABLE: dict[str, PrecastConcreteAllowable] = {
+    "RC杭": PrecastConcreteAllowable(
+        fck=40.0,
+        bending_compression=13.5,
+        axial_compression=11.5,
+        shear=0.36,
+        bending_tension=None,
+    ),
+    "PHC杭": PrecastConcreteAllowable(
+        fck=80.0,
+        bending_compression=27.0,
+        axial_compression=23.0,
+        shear=0.85,
+        bending_tension=0.0,  # 常時は引張を許さない
+    ),
+    "SC杭": PrecastConcreteAllowable(
+        fck=80.0,
+        bending_compression=27.0,
+        axial_compression=23.0,
+        shear=0.85,
+        bending_tension=None,
+    ),
+}
+
+# PHC杭の地震時の許容曲げ引張応力度 (N/mm2)。
+# 有効プレストレス σce (N/mm2) の下限値 → 許容値(降順)。
+PHC_BENDING_TENSION_BY_PRESTRESS: tuple[tuple[float, float], ...] = (
+    (7.8, 5.0),
+    (3.9, 3.0),
+)
+
+# 鋼杭(H形鋼杭)の許容応力度の**参考値** (N/mm2)。
+#
+# .. warning::
+#    **本ソフトでは使用していない。** 提供資料に「H形鋼杭については、断面・
+#    座屈・曲げ圧縮等の照査条件があるため、この数値だけで断面照査を行わない
+#    こと」と明記されているため、照査の実装は見送っている。
+#    参考として記録するにとどめる(常時 / 地震時の例)。
+H_STEEL_REFERENCE_ALLOWABLE: dict[str, tuple[float, float]] = {
+    "SS400相当": (140.0, 210.0),
+    "SM490相当": (185.0, 277.0),
+}
+
 # 鉄筋・鋼材のヤング係数 (kN/m2)
 E_REBAR = 2.0e8
 
