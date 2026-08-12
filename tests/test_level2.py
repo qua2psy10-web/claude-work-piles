@@ -241,8 +241,8 @@ def test_response_ductility_is_ratio_of_displacements():
     assert check.judgement == ("OK" if mu <= 4.0 else "NG")
 
 
-def test_allowable_values_are_not_assumed():
-    """許容塑性率・許容変位は未入力なら照査しない(既定値を置かない)。"""
+def test_allowable_ductility_is_not_assumed_at_the_low_level_api():
+    """低水準 API では μa を勝手に決めない(杭種・下部構造を知らないため)。"""
     s = spring(push=1500.0, pull=1500.0)
     result = analyze_level2(
         ARRANGEMENT, s, k1=K1, k2=K2, k4=K4,
@@ -250,8 +250,109 @@ def test_allowable_values_are_not_assumed():
     )
     assert result.allowable_ductility is None
     assert result.allowable_displacement is None
-    assert result.checks == []
+    assert not any(c.name == "応答塑性率" for c in result.checks)
     assert any("μa" in note for note in result.notes)
+
+
+def test_footing_rotation_is_checked_against_the_standard_value():
+    """フーチング底面の回転角は道示Ⅴ の 0.02 rad を既定で照査すること。"""
+    from core.standards import ALLOWABLE_FOOTING_ROTATION
+
+    assert ALLOWABLE_FOOTING_ROTATION == 0.02
+    s = spring(push=1500.0, pull=1500.0)
+    result = analyze_level2(
+        ARRANGEMENT, s, k1=K1, k2=K2, k4=K4,
+        v_load=9000.0, h_load=2000.0, m_load=8000.0,
+    )
+    check = next(c for c in result.checks if "回転角" in c.name)
+    assert check.capacity == pytest.approx(0.02)
+    assert check.unit == "rad"
+    # 応答値は回転角の絶対値(水平変位ではない)
+    assert check.demand == pytest.approx(abs(result.response.theta))
+
+
+def test_footing_rotation_check_can_fail():
+    """回転角が 0.02 rad を超えれば NG になること。"""
+    # 引抜き側の上限を極端に小さくすると回転が進む
+    s = spring(push=1.0e7, pull=10.0, kv=1.0e4)
+    result = analyze_level2(
+        ARRANGEMENT, s, k1=K1, k2=K2, k4=K4,
+        v_load=9000.0, h_load=2000.0, m_load=200000.0,
+    )
+    assert result.response is not None
+    check = next(c for c in result.checks if "回転角" in c.name)
+    assert check.demand > 0.02
+    assert check.judgement == "NG"
+    assert not result.all_ok
+
+
+# --- 許容塑性率の決定 -------------------------------------------------------
+
+
+def test_allowable_ductility_by_structure_type():
+    from core.analysis.level2 import allowable_ductility_for
+    from core.standards import StructureType
+
+    assert allowable_ductility_for(StructureType.PIER) == 4.0
+    assert allowable_ductility_for(StructureType.ABUTMENT) == 3.0
+
+
+def test_allowable_ductility_drops_for_cast_in_place_with_high_grade_rebar():
+    from core.analysis.level2 import allowable_ductility_for
+    from core.standards import StructureType
+
+    cip = PileSpec(
+        pile_type=PileType.CAST_IN_PLACE,
+        method=ConstructionMethod.CAST_IN_PLACE,
+        diameter=1.0,
+        length=18.0,
+    )
+    for grade in ("SD390", "SD490"):
+        assert allowable_ductility_for(StructureType.PIER, cip, grade) == 2.0
+        # 橋台は基礎の塑性化を考慮できない
+        assert allowable_ductility_for(StructureType.ABUTMENT, cip, grade) is None
+    # SD345 は通常の値
+    assert allowable_ductility_for(StructureType.PIER, cip, "SD345") == 4.0
+
+
+def test_high_grade_rebar_rule_applies_only_to_cast_in_place():
+    from core.analysis.level2 import allowable_ductility_for
+    from core.standards import StructureType
+
+    assert allowable_ductility_for(StructureType.PIER, STEEL, "SD390") == 4.0
+
+
+def test_run_level2_sets_allowable_ductility_automatically():
+    from core.analysis.level2 import run_level2
+    from core.standards import StructureType
+
+    result = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, sample_ground(),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0,
+        structure_type=StructureType.ABUTMENT,
+    )
+    assert result.allowable_ductility == 3.0
+    assert any("μa = 3" in n for n in result.notes)
+
+
+def test_run_level2_warns_when_plasticity_not_allowed():
+    from core.analysis.level2 import run_level2
+    from core.standards import StructureType
+
+    cip = PileSpec(
+        pile_type=PileType.CAST_IN_PLACE,
+        method=ConstructionMethod.CAST_IN_PLACE,
+        diameter=1.0,
+        length=18.0,
+    )
+    result = run_level2(
+        cip, ARRANGEMENT, FOOTING, sample_ground(),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0,
+        structure_type=StructureType.ABUTMENT,
+        rebar_grade="SD390",
+    )
+    assert result.allowable_ductility is None
+    assert any("塑性化を考慮できない" in n for n in result.notes)
 
 
 def test_limitations_are_reported():

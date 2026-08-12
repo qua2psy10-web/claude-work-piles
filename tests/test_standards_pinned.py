@@ -402,3 +402,32 @@ def test_steel_yield_points_are_consistent_with_allowables():
     for grade, sigma_y in st.SIGMA_Y_STEEL.items():
         ratio = sigma_y / st.SIGMA_A_STEEL[grade]
         assert 1.65 <= ratio <= 1.75, f"{grade}: σy/σa = {ratio:.2f}"
+
+
+def test_level2_allowable_ductility_pinned():
+    """杭基礎の許容塑性率(直杭)。二次資料2件で一致。"""
+    assert st.ALLOWABLE_DUCTILITY_PILE == {"橋脚": 4.0, "橋台": 3.0}
+    # 橋台のほうが小さい(塑性化に対する余裕が小さい)
+    assert st.ALLOWABLE_DUCTILITY_PILE["橋台"] < st.ALLOWABLE_DUCTILITY_PILE["橋脚"]
+    assert set(st.ALLOWABLE_DUCTILITY_PILE) == {t.value for t in st.StructureType}
+
+
+def test_cast_in_place_high_grade_rebar_reduces_ductility():
+    """SD390・SD490 を用いる場所打ち杭は許容塑性率が下がる(確度C・安全側)。"""
+    assert st.ALLOWABLE_DUCTILITY_CIP_HIGH_GRADE == {"橋脚": 2.0, "橋台": None}
+    assert st.HIGH_GRADE_REBAR_FOR_DUCTILITY == frozenset({"SD390", "SD490"})
+    for key, value in st.ALLOWABLE_DUCTILITY_CIP_HIGH_GRADE.items():
+        # 通常値より必ず小さい(None = 塑性化不可)
+        assert value is None or value < st.ALLOWABLE_DUCTILITY_PILE[key]
+    # 実装している鉄筋材質のうち高強度側と整合すること
+    assert "SD390" in st.SIGMA_SA_REBAR
+
+
+def test_allowable_footing_rotation_pinned():
+    """許容変位はフーチング底面の回転角 0.02 rad。
+
+    二次資料には「0.02rad(約1/60rad)」とあるが、0.02 rad は 1/50 rad で
+    あり併記が一致しない。数値 0.02 のほうを採用している。
+    """
+    assert st.ALLOWABLE_FOOTING_ROTATION == 0.02
+    assert 1.0 / st.ALLOWABLE_FOOTING_ROTATION == pytest.approx(50.0)

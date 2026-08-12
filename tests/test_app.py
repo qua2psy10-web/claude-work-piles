@@ -127,10 +127,16 @@ def test_level2_button_produces_result():
     assert any("非線形" in t or "pHU" in t for t in texts)
 
 
-def test_level2_without_allowables_warns_instead_of_assuming():
-    """μa・δa 未入力時は既定値を置かず、照査しない旨を警告すること。"""
+def test_level2_derives_allowable_ductility_and_checks_rotation():
+    """μa は下部構造の種別から自動設定し、回転角は 0.02 rad で照査すること。"""
     at = run_app()
     button = next(b for b in at.button if "レベル2照査" in b.label)
     button.click().run()
     assert not at.exception
-    assert any("未入力" in w.value for w in at.warning)
+    result = at.session_state["level2"]
+    # 既定は橋脚 → μa = 4
+    assert result.allowable_ductility == 4.0
+    assert result.allowable_rotation == 0.02
+    assert any("回転角" in c.name for c in result.checks)
+    # 自動設定した旨が注記される
+    assert any("μa = 4" in n for n in result.notes)

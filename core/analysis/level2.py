@@ -40,7 +40,15 @@ from core.capacity.springs import PileSection, axial_spring, lateral_springs
 from core.models.loads import LoadCase
 from core.models.pile import Footing, PileArrangement, PileSpec, PileType
 from core.models.soil import SoilProfile
-from core.standards import SIGMA_Y_STEEL, E0Method
+from core.standards import (
+    ALLOWABLE_DUCTILITY_CIP_HIGH_GRADE,
+    ALLOWABLE_DUCTILITY_PILE,
+    ALLOWABLE_FOOTING_ROTATION,
+    HIGH_GRADE_REBAR_FOR_DUCTILITY,
+    SIGMA_Y_STEEL,
+    E0Method,
+    StructureType,
+)
 
 
 # 本解析の制限(結果の注記として利用者に提示する)
@@ -53,8 +61,6 @@ LIMITATIONS: tuple[str, ...] = (
     "追跡していない。",
     "押込み支持力の上限値 Pu・引抜き抵抗力の上限値 Pt は、許容応力度設計法の"
     "式で安全率を 1 とした値として算定している(道示Ⅴ の規定との照合が未了)。",
-    "許容塑性率 μa・許容変位 δa は道示Ⅴ の表が未照合のため、"
-    "利用者の入力値をそのまま用いる。",
     "液状化に伴う地盤定数の低減、群杭効果、側方流動は考慮していない。",
     "水平方向地盤反力係数 kH はレベル1地震時の値(α = 2)を用いている。"
     "レベル2用の地盤反力係数の規定は未照合。",
@@ -154,6 +160,28 @@ class YieldPoint:
         return self.step.h
 
 
+def allowable_ductility_for(
+    structure_type: StructureType,
+    pile: PileSpec | None = None,
+    rebar_grade: str | None = None,
+) -> float | None:
+    """杭基礎の許容塑性率 μa(道示Ⅴ 12.4)。
+
+    直杭を前提とする(本ソフトは斜杭に未対応)。場所打ち杭に SD390・SD490 を
+    用いる場合は許容塑性率が下がり、橋台では基礎の塑性化を考慮できない
+    (None を返す)。
+    """
+    key = structure_type.value
+    high_grade = (
+        pile is not None
+        and pile.pile_type == PileType.CAST_IN_PLACE
+        and rebar_grade in HIGH_GRADE_REBAR_FOR_DUCTILITY
+    )
+    if high_grade:
+        return ALLOWABLE_DUCTILITY_CIP_HIGH_GRADE[key]
+    return ALLOWABLE_DUCTILITY_PILE[key]
+
+
 @dataclass(frozen=True)
 class Level2Result:
     steps: list[PushoverStep]
@@ -161,6 +189,7 @@ class Level2Result:
     response: PushoverStep | None  # λ = 1(設計レベル2荷重)の応答
     allowable_ductility: float | None
     allowable_displacement: float | None
+    allowable_rotation: float | None = ALLOWABLE_FOOTING_ROTATION
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -209,13 +238,24 @@ class Level2Result:
                         note="μr = δr / δy",
                     )
                 )
+        if self.allowable_rotation is not None:
+            results.append(
+                Level2Check(
+                    name="フーチング底面の回転角",
+                    demand=abs(self.response.theta),
+                    capacity=self.allowable_rotation,
+                    unit="rad",
+                    note="過大な残留変位を生じさせないための規定(0.02 rad = 1/50)",
+                )
+            )
         if self.allowable_displacement is not None:
             results.append(
                 Level2Check(
-                    name="応答変位",
+                    name="応答水平変位",
                     demand=self.response.u,
                     capacity=self.allowable_displacement,
                     unit="m",
+                    note="道示の規定ではなく利用者が指定した制限値",
                 )
             )
         return results
@@ -454,14 +494,21 @@ def analyze_level2(
     yield_moment: float | None = None,
     allowable_ductility: float | None = None,
     allowable_displacement: float | None = None,
+    allowable_rotation: float | None = ALLOWABLE_FOOTING_ROTATION,
     max_factor: float = 3.0,
     steps: int = 120,
 ) -> Level2Result:
     """レベル2地震時の照査を行う。
 
-    ``allowable_ductility``(許容塑性率 μa)と ``allowable_displacement``
-    (許容変位 δa)は道示Ⅴ の表が未照合のため既定値を持たない。
-    与えられた場合のみ該当する照査を行う。
+    Parameters
+    ----------
+    allowable_ductility:
+        許容塑性率 μa。省略時は照査しない。杭種・下部構造から求める場合は
+        :func:`allowable_ductility_for` を使う(:func:`run_level2` は自動)。
+    allowable_rotation:
+        フーチング底面位置の許容回転角 (rad)。道示Ⅴ の 0.02 rad が既定値。
+    allowable_displacement:
+        水平変位の制限値 (m)。道示Ⅴ の規定ではないため既定値を持たない。
     """
     steps_list, yield_point = pushover(
         arrangement,
@@ -486,7 +533,7 @@ def analyze_level2(
         )
     if yield_point is not None and allowable_ductility is None:
         notes.append(
-            "基礎が降伏しているが許容塑性率 μa が未入力のため、"
+            "基礎が降伏しているが許容塑性率 μa が未設定のため、"
             "応答塑性率の照査を行っていない。"
         )
     return Level2Result(
@@ -495,6 +542,7 @@ def analyze_level2(
         response=response,
         allowable_ductility=allowable_ductility,
         allowable_displacement=allowable_displacement,
+        allowable_rotation=allowable_rotation,
         notes=notes,
     )
 
@@ -549,8 +597,11 @@ def run_level2(
     fck: int = 24,
     yield_moment: float | None = None,
     steel_grade: str = "SKK400",
+    structure_type: StructureType = StructureType.PIER,
+    rebar_grade: str | None = None,
     allowable_ductility: float | None = None,
     allowable_displacement: float | None = None,
+    allowable_rotation: float | None = ALLOWABLE_FOOTING_ROTATION,
     e0_method: E0Method = E0Method.N_VALUE,
     max_factor: float = 3.0,
     steps: int = 120,
@@ -561,6 +612,9 @@ def run_level2(
     :func:`yield_moment_steel_pipe` により自動算定する(軸力は設計レベル2
     荷重時の平均軸力 V / 杭本数を用いる)。それ以外の杭種では杭体降伏の
     判定を行わず、軸方向支持力の上限到達のみで降伏を判定する。
+
+    ``allowable_ductility`` を省略した場合は ``structure_type`` と
+    ``rebar_grade`` から :func:`allowable_ductility_for` により決定する。
     """
     section = pile_section(pile, fck=fck)
     bearing = compute_bearing_capacity(pile, profile, footing.embedment)
@@ -572,6 +626,22 @@ def run_level2(
     )
 
     extra_notes: list[str] = []
+    if allowable_ductility is None:
+        allowable_ductility = allowable_ductility_for(
+            structure_type, pile, rebar_grade
+        )
+        if allowable_ductility is None:
+            extra_notes.append(
+                f"{structure_type.value}の場所打ち杭に {rebar_grade} を用いる"
+                "場合、基礎の塑性化を考慮できない(許容塑性率の規定がない)。"
+                "基礎が降伏しない設計とする必要がある。"
+            )
+        else:
+            extra_notes.append(
+                f"許容塑性率 μa = {allowable_ductility:g} を"
+                f"{structure_type.value}の杭基礎(直杭)として自動設定した。"
+            )
+
     if yield_moment is None and pile.pile_type in (
         PileType.STEEL_PIPE,
         PileType.STEEL_PIPE_SOIL_CEMENT,
@@ -604,6 +674,7 @@ def run_level2(
         yield_moment=yield_moment,
         allowable_ductility=allowable_ductility,
         allowable_displacement=allowable_displacement,
+        allowable_rotation=allowable_rotation,
         max_factor=max_factor,
         steps=steps,
     )
@@ -613,6 +684,7 @@ def run_level2(
         response=result.response,
         allowable_ductility=result.allowable_ductility,
         allowable_displacement=result.allowable_displacement,
+        allowable_rotation=result.allowable_rotation,
         notes=extra_notes + result.notes,
     )
 

@@ -41,6 +41,7 @@ from core.standards import (
     SIGMA_SA_REBAR,
     E0Method,
     GroundType,
+    StructureType,
 )
 
 LAYER_COLUMNS = {
@@ -398,17 +399,13 @@ def _render_level2(result) -> None:
         )
         st.success("全照査 OK") if result.all_ok else st.error("NG の照査項目あり")
 
-    missing = []
     if result.allowable_ductility is None:
-        missing.append("許容塑性率 μa")
-    if result.allowable_displacement is None:
-        missing.append("許容変位 δa")
-    if missing:
         st.warning(
-            f"{' と '.join(missing)}が未入力のため、該当する照査を行っていない。"
-            "道示Ⅴ の表が未照合のため既定値は用意していない"
-            "(誤った既定値で判定するより未実施と明示する方針)。"
+            "許容塑性率 μa が設定されていないため、応答塑性率の照査を"
+            "行っていない。"
         )
+    elif result.yielded:
+        st.caption(f"許容塑性率 μa = {result.allowable_ductility:g}")
 
     if result.steps:
         st.markdown("**荷重〜変位関係(プッシュオーバー曲線)**")
@@ -1048,18 +1045,26 @@ def main() -> None:
                 ),
             )
         with l2c3:
+            structure_type = st.selectbox(
+                "下部構造の種別", [t.value for t in StructureType],
+                index=0, key=f"l2st_{nonce}",
+                help="許容塑性率が異なる(橋脚 4 / 橋台 3、直杭)",
+            )
             l2_mua = st.number_input(
-                "許容塑性率 μa", 0.0, 20.0, value=0.0, step=0.5,
+                "許容塑性率 μa(0 = 自動)", 0.0, 20.0, value=0.0, step=0.5,
                 key=f"l2mua_{nonce}",
                 help=(
-                    "道示Ⅴ の表が未照合のため既定値を持たない。"
-                    "0 のときは応答塑性率の照査を行わない"
+                    "0 のときは下部構造の種別・杭種・鉄筋材質から自動設定する"
+                    "(場所打ち杭に SD390・SD490 を用いる場合は低減される)"
                 ),
             )
             l2_da = st.number_input(
-                "許容変位 δa (m)", 0.0, 5.0, value=0.0, step=0.01,
-                key=f"l2da_{nonce}",
-                help="0 のときは応答変位の照査を行わない",
+                "水平変位の制限値 (m、0 = 照査しない)", 0.0, 5.0,
+                value=0.0, step=0.01, key=f"l2da_{nonce}",
+                help=(
+                    "道示Ⅴ の規定ではない。道示の許容変位は"
+                    "フーチング底面の回転角 0.02 rad で、これは常に照査する"
+                ),
             )
         if profile is None:
             st.error(f"地層データにエラーがあります: {profile_error}")
@@ -1076,6 +1081,8 @@ def main() -> None:
                     fck=int(fck),
                     yield_moment=l2_my if l2_my > 0 else None,
                     steel_grade=steel_grade,
+                    structure_type=StructureType(structure_type),
+                    rebar_grade=rebar_grade,
                     allowable_ductility=l2_mua if l2_mua > 0 else None,
                     allowable_displacement=l2_da if l2_da > 0 else None,
                     e0_method=E0Method(e0_method),
