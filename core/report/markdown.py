@@ -484,7 +484,29 @@ def _level2_section(result: Level2Result) -> str:
         )
         s.append(f"\n**判定: {'OK' if result.all_ok else 'NG'}**\n")
 
-    s.append("\n### 7.3 この解析の制限事項\n")
+    sr = result.soil_reaction
+    if sr is not None:
+        s.append("\n### 7.3 水平地盤反力度と上限値 pHU の突合(診断)\n")
+        s.append(
+            "判定に用いた杭: "
+            + ("最前列" if sr.front_row else "最前列以外(砂質地盤で pHU が 1/2)")
+            + "\n"
+        )
+        if sr.ok:
+            s.append(
+                f"\n地盤反力度は上限値 pHU 以下(最大で pHU の "
+                f"{sr.max_ratio * 100:.0f}%)。\n"
+            )
+        else:
+            top, bottom = sr.exceeded_depth_range
+            s.append(
+                f"\n> **深さ {top:.1f}〜{bottom:.1f} m で pHU を超過"
+                f"(最大 {sr.max_ratio * 100:.0f}%)。**"
+                "本解析は水平地盤バネを弾性としているため、この区間の"
+                "地盤抵抗を過大に評価しており、結果は非安全側である。\n"
+            )
+
+    s.append("\n### 7.4 この解析の制限事項\n")
     for note in result.notes:
         s.append(f"- {note}\n")
     return "".join(s)

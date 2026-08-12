@@ -501,7 +501,7 @@ def test_run_level2_auto_yield_moment_for_steel_pipe():
         allowable_ductility=4.0, allowable_displacement=0.3,
     )
     assert result.steps
-    assert any("降伏曲げモーメント" in n for n in result.notes)
+    assert any("Mp" in n for n in result.notes)
     assert result.response is not None
     assert result.response.h == pytest.approx(3000.0)
 
@@ -536,3 +536,181 @@ def test_run_level2_uses_bearing_capacity_limits():
     assert all(
         r.axial <= limit + 1e-6 for step in result.steps for r in step.reactions
     )
+
+
+# --- 全塑性モーメント Mp ----------------------------------------------------
+
+
+def test_plastic_moment_without_axial_force():
+    """N = 0 のとき Mp0 = 4・σy・t・r²(薄肉厳密解)。"""
+    from core.analysis.level2 import plastic_moment_steel_pipe
+
+    t = 0.011  # 12mm − 腐食代 1mm
+    r = (1.0 - t) / 2.0
+    expected = 4.0 * SIGMA_Y_STEEL["SKK400"] * t * r**2 * 1000.0
+    assert plastic_moment_steel_pipe(STEEL, 0.0) == pytest.approx(expected)
+
+
+def test_plastic_moment_agrees_with_exact_hollow_section():
+    """薄肉近似は中実解 Zp =(D³−d³)/6 と 1% 以内で一致すること。"""
+    from core.analysis.level2 import (
+        plastic_moment_steel_pipe,
+        plastic_section_modulus_hollow,
+    )
+
+    t = 0.011
+    exact = plastic_section_modulus_hollow(1.0, t) * SIGMA_Y_STEEL["SKK400"] * 1000.0
+    assert plastic_moment_steel_pipe(STEEL, 0.0) == pytest.approx(exact, rel=0.01)
+
+
+def test_plastic_moment_exceeds_first_yield_moment():
+    """全塑性モーメントは最外縁降伏モーメントより大きいこと。"""
+    from core.analysis.level2 import plastic_moment_steel_pipe
+
+    section = pile_section(STEEL)
+    for axial in (0.0, 1000.0, 3000.0):
+        mp = plastic_moment_steel_pipe(STEEL, axial)
+        my = yield_moment_steel_pipe(STEEL, section, axial)
+        assert mp > my
+    # 形状係数 Zp/Z は円環で 4/π ≒ 1.27 程度
+    assert plastic_moment_steel_pipe(STEEL, 0.0) / yield_moment_steel_pipe(
+        STEEL, section, 0.0
+    ) == pytest.approx(4.0 / math.pi, rel=0.02)
+
+
+def test_plastic_moment_decreases_with_axial_force():
+    from core.analysis.level2 import plastic_moment_steel_pipe
+
+    values = [plastic_moment_steel_pipe(STEEL, n) for n in (0.0, 2000.0, 5000.0)]
+    assert values[0] > values[1] > values[2]
+
+
+def test_plastic_moment_vanishes_at_squash_load():
+    """全塑性軸力に近づくと曲げ耐力が 0 に近づくこと。"""
+    from core.analysis.level2 import plastic_moment_steel_pipe
+
+    t = 0.011
+    r = (1.0 - t) / 2.0
+    squash = SIGMA_Y_STEEL["SKK400"] * 2 * math.pi * r * t * 1000.0
+    assert plastic_moment_steel_pipe(STEEL, squash * 0.999) == pytest.approx(
+        0.0, abs=squash * 1e-3
+    )
+    with pytest.raises(ValueError, match="全塑性軸力"):
+        plastic_moment_steel_pipe(STEEL, squash)
+
+
+def test_plastic_moment_accounts_for_corrosion():
+    from core.analysis.level2 import plastic_moment_steel_pipe
+
+    assert plastic_moment_steel_pipe(STEEL, 0.0, corrosion_mm=3.0) < (
+        plastic_moment_steel_pipe(STEEL, 0.0, corrosion_mm=0.0)
+    )
+
+
+def test_plastic_moment_rejects_non_steel_pipe():
+    from core.analysis.level2 import plastic_moment_steel_pipe
+
+    cip = PileSpec(
+        pile_type=PileType.CAST_IN_PLACE,
+        method=ConstructionMethod.CAST_IN_PLACE,
+        diameter=1.0,
+        length=20.0,
+    )
+    with pytest.raises(ValueError, match="鋼管杭"):
+        plastic_moment_steel_pipe(cip, 1000.0)
+
+
+def test_run_level2_uses_plastic_moment_for_steel_pipe():
+    """鋼管杭の杭体降伏判定は Mp を用いること(最外縁降伏ではない)。"""
+    from core.analysis.level2 import plastic_moment_steel_pipe, run_level2
+
+    result = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, sample_ground(),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0,
+    )
+    mean_axial = 9000.0 / 9
+    mp = plastic_moment_steel_pipe(STEEL, mean_axial)
+    assert any(f"Mp = {mp:.0f}" in n for n in result.notes)
+    assert any("バイリニア" in n for n in result.notes)
+
+
+# --- pHU との突合診断 -------------------------------------------------------
+
+
+def ground_with_kep(k_ep=3.0):
+    return SoilProfile(
+        layers=[
+            SoilLayer(
+                name="As", soil_type=SoilType.SAND, thickness=10.0, n_value=15.0,
+                gamma_t=18.0, gamma_sat=19.0, k_ep=k_ep,
+            ),
+            SoilLayer(
+                name="Ds", soil_type=SoilType.SAND, thickness=20.0, n_value=45.0,
+                gamma_t=19.0, gamma_sat=20.0, k_ep=k_ep,
+            ),
+        ],
+        gwl=2.0,
+    )
+
+
+def test_diagnosis_skipped_without_kep():
+    from core.analysis.level2 import run_level2
+
+    result = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, sample_ground(),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0,
+    )
+    assert result.soil_reaction is None
+    assert any("KEP が未入力" in n for n in result.notes)
+
+
+def test_diagnosis_runs_when_kep_is_given():
+    from core.analysis.level2 import run_level2
+
+    result = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, ground_with_kep(),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0,
+    )
+    assert result.soil_reaction is not None
+    assert result.soil_reaction.points
+    # 3列配置なので最前列以外(1/2 が効く側)で判定する
+    assert result.soil_reaction.front_row is False
+
+
+def test_diagnosis_flags_exceedance_as_unsafe():
+    """pHU を極端に小さくすると、非安全側である旨が注記されること。"""
+    from core.analysis.level2 import run_level2
+
+    result = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, ground_with_kep(k_ep=0.01),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0,
+    )
+    assert result.soil_reaction is not None
+    assert not result.soil_reaction.ok
+    assert result.soil_reaction.exceeded_depth_range is not None
+    assert any("非安全側" in n for n in result.notes)
+
+
+def test_diagnosis_reports_ok_when_within_limit():
+    from core.analysis.level2 import run_level2
+
+    result = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, ground_with_kep(k_ep=50.0),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0,
+    )
+    assert result.soil_reaction is not None
+    assert result.soil_reaction.ok
+    assert result.soil_reaction.max_ratio < 1.0
+    assert any("上限値 pHU 以下" in n for n in result.notes)
+
+
+def test_diagnosis_depths_are_measured_from_ground_surface():
+    """診断の深さは杭頭からではなく地表面からであること。"""
+    from core.analysis.level2 import run_level2
+
+    result = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, ground_with_kep(),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0,
+    )
+    shallowest = min(p.depth for p in result.soil_reaction.points)
+    assert shallowest == pytest.approx(FOOTING.embedment)

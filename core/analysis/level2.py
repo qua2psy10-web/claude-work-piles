@@ -17,14 +17,20 @@
 頭打ちとなるバイリニアモデルとする。
 
 水平方向の地盤反力(K1〜K4)は**弾性のまま**であり、水平地盤反力度の
-上限値 pHU による塑性化は取り込んでいない。杭体の非線形(M-φ 関係)も
-未実装で、杭体の降伏は利用者が与える降伏曲げモーメント My との比較で
-判定する。したがって本解析は
+上限値 pHU による塑性化は取り込んでいない。ただし
+:func:`check_soil_reaction_limit` により、弾性モデルの地盤反力度が pHU を
+超える区間があるかを**診断**し、非安全側になっている深度を提示する。
+
+杭体の曲げ剛性低下(M-φ 関係)も追跡していない。杭体の降伏は、鋼管杭では
+全塑性モーメント Mp(:func:`plastic_moment_steel_pipe`)、その他の杭種では
+利用者が与える降伏曲げモーメントとの比較で判定する。したがって本解析は
 
     「軸方向バネの塑性化と杭体降伏の判定に基づく降伏点の推定」
 
-であり、道示Ⅴ の完全な地震時保有水平耐力法ではない。制限は
-:data:`LIMITATIONS` に列挙し、結果にも注記として付す。
+であり、道示Ⅴ の完全な地震時保有水平耐力法ではない。完全な照査には、杭を
+軸方向に分割して各節点に弾塑性地盤バネを配置し、要素ごとに M-φ で剛性を
+更新する分布バネモデル(BNWF)が必要になる。制限は :data:`LIMITATIONS` に
+列挙し、結果にも注記として付す。
 """
 from __future__ import annotations
 
@@ -34,9 +40,16 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from core.analysis.displacement import PileReaction, pile_x_coordinates
+from core.analysis.section_forces import distribution
 from core.capacity.bearing import BearingCapacity, compute_bearing_capacity
+from core.capacity.lateral_limit import p_hu
 from core.capacity.section import CORROSION_ALLOWANCE_MM, pile_section
-from core.capacity.springs import PileSection, axial_spring, lateral_springs
+from core.capacity.springs import (
+    LateralSprings,
+    PileSection,
+    axial_spring,
+    lateral_springs,
+)
 from core.models.loads import LoadCase
 from core.models.pile import Footing, PileArrangement, PileSpec, PileType
 from core.models.soil import SoilProfile
@@ -54,11 +67,14 @@ from core.standards import (
 # 本解析の制限(結果の注記として利用者に提示する)
 LIMITATIONS: tuple[str, ...] = (
     "水平地盤反力は弾性(K1〜K4)のままであり、水平地盤反力度の上限値 pHU "
-    "による塑性化を考慮していない。したがって降伏水平力を過大に、"
-    "降伏変位を過小に評価するおそれがある。",
-    "杭体の M-φ 関係(非線形)は未実装で、杭体の降伏は入力された降伏曲げ"
-    "モーメント My との比較のみで判定する。塑性ヒンジ後の剛性低下は"
-    "追跡していない。",
+    "による塑性化を解析に取り込んでいない。したがって降伏水平力を過大に、"
+    "降伏変位を過小に評価するおそれがある。ただし地層に KEP を入力すれば、"
+    "pHU を超える区間があるかを診断として確認できる。",
+    "杭体の M-φ 関係は、鋼管杭・鋼管ソイルセメント杭のバイリニア型"
+    "(全塑性モーメント Mp を上限とする)の折れ点のみを算定している。"
+    "場所打ちRC杭・PHC杭・SC杭のトリリニア型(ひび割れ C・降伏 Y・終局 U)は"
+    "未実装で、これらの杭種では My を入力する必要がある。"
+    "いずれの杭種でも、塑性ヒンジ後の曲げ剛性低下は追跡していない。",
     "押込み支持力の上限値 Pu・引抜き抵抗力の上限値 Pt は、許容応力度設計法の"
     "式で安全率を 1 とした値として算定している(道示Ⅴ の規定との照合が未了)。",
     "液状化に伴う地盤定数の低減、群杭効果、側方流動は考慮していない。",
@@ -190,6 +206,7 @@ class Level2Result:
     allowable_ductility: float | None
     allowable_displacement: float | None
     allowable_rotation: float | None = ALLOWABLE_FOOTING_ROTATION
+    soil_reaction: SoilReactionCheck | None = None  # pHU との突合(診断)
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -586,6 +603,170 @@ def yield_moment_steel_pipe(
     return (sigma_y - sigma_axial) * section_modulus * 1000.0
 
 
+@dataclass(frozen=True)
+class SoilReactionPoint:
+    """1深度における地盤反力度と、その上限値。"""
+
+    depth: float  # 地表面からの深さ (m)
+    reaction: float  # 弾性モデルの地盤反力度 kH・y (kN/m²)
+    limit: float  # 上限値 pHU (kN/m²)
+
+    @property
+    def ratio(self) -> float:
+        return abs(self.reaction) / self.limit if self.limit else math.inf
+
+    @property
+    def exceeded(self) -> bool:
+        return self.ratio > 1.0
+
+
+@dataclass(frozen=True)
+class SoilReactionCheck:
+    """弾性の地盤バネが pHU を超えていないかの診断。
+
+    本ソフトの水平地盤バネは弾性のままなので、pHU を超える区間があれば
+    **その区間の地盤抵抗を過大に見積もっている**(非安全側)。塑性化を
+    取り込んだ解析(分布バネモデル)が必要であることを示す診断として用いる。
+    """
+
+    points: list[SoilReactionPoint]
+    front_row: bool  # 判定に用いた杭が最前列か
+
+    @property
+    def exceedances(self) -> list[SoilReactionPoint]:
+        return [p for p in self.points if p.exceeded]
+
+    @property
+    def ok(self) -> bool:
+        return not self.exceedances
+
+    @property
+    def max_ratio(self) -> float:
+        return max((p.ratio for p in self.points), default=0.0)
+
+    @property
+    def exceeded_depth_range(self) -> tuple[float, float] | None:
+        found = self.exceedances
+        if not found:
+            return None
+        return (min(p.depth for p in found), max(p.depth for p in found))
+
+
+def check_soil_reaction_limit(
+    pile: PileSpec,
+    arrangement: PileArrangement,
+    footing: Footing,
+    profile: SoilProfile,
+    section: PileSection,
+    springs: LateralSprings,
+    head_shear: float,
+    head_moment: float,
+) -> SoilReactionCheck:
+    """弾性モデルの地盤反力度を pHU と比較する。
+
+    杭体の水平変位分布 y(x) を Chang の式から求め、地盤反力度
+    p = kH・y を深度ごとの pHU と突き合わせる。
+
+    フーチングを剛体としているため全杭の y(x) は等しい。一方 pHU は砂質
+    地盤で最前列以外が 1/2 になるため、**最前列以外の杭が支配する**。
+    杭が2列以上ある場合はそちらで判定する。
+    """
+    forces = distribution(
+        ei=section.ei,
+        beta=springs.beta,
+        h0=head_shear,
+        m0=head_moment,
+        length=pile.length,
+    )
+    front_row = arrangement.nx < 2
+    points: list[SoilReactionPoint] = []
+    for point in forces.points:
+        depth = footing.embedment + point.depth
+        if depth > profile.total_depth:
+            break
+        points.append(
+            SoilReactionPoint(
+                depth=depth,
+                reaction=springs.kh * point.displacement,
+                limit=p_hu(
+                    profile,
+                    depth,
+                    pile.diameter,
+                    arrangement.spacing_y,
+                    front_row=front_row,
+                ),
+            )
+        )
+    return SoilReactionCheck(points=points, front_row=front_row)
+
+
+def plastic_moment_steel_pipe(
+    pile: PileSpec,
+    axial: float,
+    steel_grade: str = "SKK400",
+    corrosion_mm: float = CORROSION_ALLOWANCE_MM,
+) -> float:
+    """鋼管杭の全塑性モーメント Mp (kN·m)。軸力の影響を含む。
+
+    鋼管杭・鋼管ソイルセメント杭の M-φ 関係はバイリニア型で、Mp を上限と
+    する(道示Ⅳ の断面計算式による)。
+
+    薄肉円環断面(平均半径 r、板厚 t)の完全塑性状態を解くと、塑性中立軸の
+    角度を θ0 として
+
+        N = −4・σy・t・r・θ0
+        M =  4・σy・t・r²・cos θ0
+
+    したがって軸力 0 のとき Mp0 = 4・σy・t・r²、squash 軸力
+    Np = σy・A に対して
+
+        Mp(N)= Mp0・cos(π・N /(2・Np))
+
+    となる。腐食代を控除した板厚を用いる。
+
+    .. note::
+       上式は**薄肉近似の厳密解**である。鋼管杭の D/t では中実解との差は
+       0.1% 程度(:func:`plastic_section_modulus_hollow` と比較するテストで
+       固定している)。道示Ⅳ が示す断面計算式そのものとの照合は未了。
+    """
+    if pile.pile_type not in (PileType.STEEL_PIPE, PileType.STEEL_PIPE_SOIL_CEMENT):
+        raise ValueError(f"{pile.pile_type.value}には使用できません(鋼管杭のみ)")
+    if steel_grade not in SIGMA_Y_STEEL:
+        raise ValueError(
+            f"鋼材 {steel_grade} の降伏点が未定義です。"
+            f"対応材質: {sorted(SIGMA_Y_STEEL)}"
+        )
+    if pile.wall_thickness is None:
+        raise ValueError("鋼管杭は板厚 wall_thickness の入力が必要です")
+
+    t = (pile.wall_thickness - corrosion_mm) / 1000.0
+    if t <= 0:
+        raise ValueError(f"腐食代 {corrosion_mm} mm 控除後の板厚が 0 以下です")
+    r = (pile.diameter - t) / 2.0  # 平均半径
+    sigma_y = SIGMA_Y_STEEL[steel_grade]
+
+    area = 2.0 * math.pi * r * t
+    squash = sigma_y * area * 1000.0  # kN
+    if abs(axial) >= squash:
+        raise ValueError(
+            f"軸力 {axial:.0f} kN が全塑性軸力 {squash:.0f} kN 以上であり、"
+            "曲げ耐力が残っていません"
+        )
+    mp0 = 4.0 * sigma_y * t * r**2 * 1000.0  # kN·m
+    return mp0 * math.cos(math.pi * axial / (2.0 * squash))
+
+
+def plastic_section_modulus_hollow(outer: float, thickness: float) -> float:
+    """中空円形断面の塑性断面係数 Zp = (D³ − d³)/ 6 (m³)。
+
+    :func:`plastic_moment_steel_pipe` の薄肉近似を検証するための厳密値。
+    """
+    inner = outer - 2.0 * thickness
+    if inner <= 0:
+        raise ValueError("肉厚が外径に対して大きすぎます")
+    return (outer**3 - inner**3) / 6.0
+
+
 def run_level2(
     pile: PileSpec,
     arrangement: PileArrangement,
@@ -597,6 +778,7 @@ def run_level2(
     fck: int = 24,
     yield_moment: float | None = None,
     steel_grade: str = "SKK400",
+    corrosion_mm: float = CORROSION_ALLOWANCE_MM,
     structure_type: StructureType = StructureType.PIER,
     rebar_grade: str | None = None,
     allowable_ductility: float | None = None,
@@ -647,13 +829,19 @@ def run_level2(
         PileType.STEEL_PIPE_SOIL_CEMENT,
     ):
         mean_axial = v_load / (arrangement.nx * arrangement.ny)
-        yield_moment = yield_moment_steel_pipe(
-            pile, section, mean_axial, steel_grade=steel_grade
+        yield_moment = plastic_moment_steel_pipe(
+            pile, mean_axial, steel_grade=steel_grade, corrosion_mm=corrosion_mm
+        )
+        first_yield = yield_moment_steel_pipe(
+            pile, section, mean_axial, steel_grade=steel_grade,
+            corrosion_mm=corrosion_mm,
         )
         extra_notes.append(
-            f"杭体の降伏曲げモーメントを My = {yield_moment:.0f} kN·m と"
-            f"自動算定した(平均軸力 {mean_axial:.0f} kN、{steel_grade}、"
-            "最外縁が降伏点に達する定義)。"
+            f"鋼管杭の M-φ 関係はバイリニア型で、全塑性モーメント "
+            f"Mp = {yield_moment:.0f} kN·m を上限とする"
+            f"(死荷重時の平均軸力 {mean_axial:.0f} kN、{steel_grade}、"
+            f"腐食代 {corrosion_mm:g} mm 控除)。参考: 最外縁が降伏点に達する"
+            f"モーメントは {first_yield:.0f} kN·m。"
         )
     elif yield_moment is None:
         extra_notes.append(
@@ -661,6 +849,12 @@ def run_level2(
             "杭体降伏による降伏判定を行っていない"
             "(軸方向支持力の上限到達のみで判定)。"
         )
+
+    soil_reaction, soil_notes = _soil_reaction_diagnosis(
+        pile, arrangement, footing, profile, section, springs, v_load, h_load, m_load,
+        kv, axial,
+    )
+    extra_notes.extend(soil_notes)
 
     result = analyze_level2(
         arrangement,
@@ -685,8 +879,74 @@ def run_level2(
         allowable_ductility=result.allowable_ductility,
         allowable_displacement=result.allowable_displacement,
         allowable_rotation=result.allowable_rotation,
+        soil_reaction=soil_reaction,
         notes=extra_notes + result.notes,
     )
+
+
+def _soil_reaction_diagnosis(
+    pile: PileSpec,
+    arrangement: PileArrangement,
+    footing: Footing,
+    profile: SoilProfile,
+    section: PileSection,
+    springs: LateralSprings,
+    v_load: float,
+    h_load: float,
+    m_load: float,
+    kv: float,
+    axial: AxialSpringModel,
+) -> tuple[SoilReactionCheck | None, list[str]]:
+    """設計レベル2荷重時の地盤反力度を pHU と突き合わせる。
+
+    KEP が未入力の層があれば診断を行わず、その旨を注記として返す。
+    """
+    from core.analysis.displacement import solve_stability
+
+    if any(layer.k_ep is None for layer in profile.layers):
+        return None, [
+            "地層の地震時受働土圧係数 KEP が未入力のため、水平地盤反力度が"
+            "上限値 pHU を超えていないかの診断を行っていない。"
+            "KEP を入力すると、弾性の地盤バネが非安全側になる区間を"
+            "確認できる。"
+        ]
+
+    # 設計レベル2荷重(λ = 1)における杭頭反力を用いる
+    elastic = solve_stability(
+        arrangement,
+        kv=kv,
+        k1=springs.k1,
+        k2=springs.k2,
+        k4=springs.k4,
+        v_load=v_load,
+        h_load=h_load,
+        m_load=m_load,
+    )
+    critical = max(elastic.reactions, key=lambda r: r.axial)
+    try:
+        check = check_soil_reaction_limit(
+            pile, arrangement, footing, profile, section, springs,
+            head_shear=critical.shear, head_moment=critical.moment,
+        )
+    except ValueError as exc:
+        return None, [f"pHU の診断を行えませんでした: {exc}"]
+
+    notes: list[str] = []
+    if check.ok:
+        notes.append(
+            f"設計レベル2荷重時の地盤反力度は上限値 pHU 以下"
+            f"(最大で pHU の {check.max_ratio * 100:.0f}%)。"
+            "弾性の地盤バネのままでも大きな乖離はないと考えられる。"
+        )
+    else:
+        top, bottom = check.exceeded_depth_range  # type: ignore[misc]
+        notes.append(
+            f"**深さ {top:.1f}〜{bottom:.1f} m で地盤反力度が上限値 pHU を"
+            f"超えている(最大で pHU の {check.max_ratio * 100:.0f}%)。**"
+            "本解析は水平地盤バネを弾性としているため、この区間の地盤抵抗を"
+            "過大に評価しており、結果は非安全側である。"
+        )
+    return check, notes
 
 
 def _response_step(steps: list[PushoverStep]) -> PushoverStep | None:

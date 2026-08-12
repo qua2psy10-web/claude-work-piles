@@ -431,3 +431,18 @@ def test_allowable_footing_rotation_pinned():
     """
     assert st.ALLOWABLE_FOOTING_ROTATION == 0.02
     assert 1.0 / st.ALLOWABLE_FOOTING_ROTATION == pytest.approx(50.0)
+
+
+def test_p_hu_factors_pinned():
+    """杭前面地盤の pHU の係数(道示Ⅳ 12.10)。"""
+    assert st.ALPHA_P_PILE == {"砂質土": 3.0, "礫質土": 3.0, "粘性土": 1.5}
+    assert st.ALPHA_P_SOFT_CLAY == 1.0
+    assert st.SOFT_CLAY_N_THRESHOLD == 2.0
+    assert st.NON_FRONT_ROW_FACTOR_SAND == 0.5
+    # 軟弱粘性土の特例は通常の粘性土より小さいこと
+    assert st.ALPHA_P_SOFT_CLAY < st.ALPHA_P_PILE["粘性土"]
+    # 砂質土・礫質土は同じ扱い
+    assert st.ALPHA_P_PILE["砂質土"] == st.ALPHA_P_PILE["礫質土"]
+    # 土質の網羅
+    from core.models.soil import SoilType
+    assert set(st.ALPHA_P_PILE) == {t.value for t in SoilType}

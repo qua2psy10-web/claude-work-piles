@@ -33,6 +33,15 @@ class SoilLayer(BaseModel):
     is_alluvial: bool = Field(default=True, description="沖積層か")
     cohesion: float | None = Field(default=None, ge=0, description="粘着力 c (kN/m2)")
     phi: float | None = Field(default=None, ge=0, description="せん断抵抗角 φ (度)")
+    k_ep: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "地震時クーロン受働土圧係数 KEP。レベル2の水平地盤反力度の"
+            "上限値 pHU の算定に用いる(算定式は本ソフトでは扱わないため"
+            "利用者が与える)"
+        ),
+    )
     e0: float | None = Field(default=None, gt=0, description="変形係数 E0 (kN/m2)")
 
 

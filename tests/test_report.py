@@ -190,3 +190,46 @@ def test_level2_section_is_included():
 def test_level2_section_absent_when_not_run():
     md = build_report(sample_project())
     assert "レベル2地震時の照査" not in md
+
+
+def test_level2_report_includes_soil_reaction_diagnosis():
+    """pHU との突合診断が計算書に含まれること。"""
+    from core.analysis.level2 import run_level2
+    from core.models import (
+        ConstructionMethod,
+        Footing,
+        PileArrangement,
+        PileSpec,
+        PileType,
+        SoilLayer,
+        SoilProfile,
+        SoilType,
+    )
+
+    profile = SoilProfile(
+        layers=[
+            SoilLayer(
+                name="As", soil_type=SoilType.SAND, thickness=30.0, n_value=20.0,
+                gamma_t=18.0, gamma_sat=19.0, k_ep=0.05,
+            )
+        ],
+        gwl=2.0,
+    )
+    pile = PileSpec(
+        pile_type=PileType.STEEL_PIPE, method=ConstructionMethod.DRIVEN,
+        diameter=1.0, length=20.0, wall_thickness=12.0,
+    )
+    result = run_level2(
+        pile,
+        PileArrangement(nx=3, ny=3, spacing_x=2.5, spacing_y=2.5),
+        Footing(width_x=8.0, width_y=8.0, height=1.5, embedment=2.0),
+        profile,
+        v_load=9000.0, h_load=3000.0, m_load=12000.0,
+    )
+    md = build_report(sample_project(), level2=result)
+
+    assert "pHU" in md
+    assert result.soil_reaction is not None
+    # KEP を極端に小さくしたので超過し、非安全側である旨が出る
+    assert not result.soil_reaction.ok
+    assert "非安全側" in md

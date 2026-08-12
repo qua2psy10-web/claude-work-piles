@@ -57,22 +57,23 @@ LAYER_COLUMNS = {
     "D10(mm)": "d10",
     "沖積層": "is_alluvial",
     "c(kN/m2)": "cohesion",
+    "KEP": "k_ep",
 }
 
 DEFAULT_LAYERS = pd.DataFrame(
     [
         {"層名": "B", "土質": "砂質土", "層厚(m)": 2.0, "N値": 5.0,
          "γt(kN/m3)": 17.0, "γsat(kN/m3)": 18.0, "FC(%)": 15.0, "IP": None,
-         "D50(mm)": 0.35, "D10(mm)": 0.05, "沖積層": True, "c(kN/m2)": None},
+         "D50(mm)": 0.35, "D10(mm)": 0.05, "沖積層": True, "c(kN/m2)": None, "KEP": None},
         {"層名": "As1", "土質": "砂質土", "層厚(m)": 6.0, "N値": 10.0,
          "γt(kN/m3)": 18.0, "γsat(kN/m3)": 19.0, "FC(%)": 5.0, "IP": None,
-         "D50(mm)": 0.30, "D10(mm)": 0.08, "沖積層": True, "c(kN/m2)": None},
+         "D50(mm)": 0.30, "D10(mm)": 0.08, "沖積層": True, "c(kN/m2)": None, "KEP": None},
         {"層名": "Ac1", "土質": "粘性土", "層厚(m)": 5.0, "N値": 4.0,
          "γt(kN/m3)": 16.0, "γsat(kN/m3)": 16.5, "FC(%)": 80.0, "IP": 30.0,
-         "D50(mm)": None, "D10(mm)": None, "沖積層": True, "c(kN/m2)": 40.0},
+         "D50(mm)": None, "D10(mm)": None, "沖積層": True, "c(kN/m2)": 40.0, "KEP": None},
         {"層名": "Ds1", "土質": "砂質土", "層厚(m)": 12.0, "N値": 35.0,
          "γt(kN/m3)": 19.0, "γsat(kN/m3)": 20.0, "FC(%)": 8.0, "IP": None,
-         "D50(mm)": 0.50, "D10(mm)": 0.10, "沖積層": False, "c(kN/m2)": None},
+         "D50(mm)": 0.50, "D10(mm)": 0.10, "沖積層": False, "c(kN/m2)": None, "KEP": None},
     ]
 )
 
@@ -116,6 +117,7 @@ def layers_from_df(df: pd.DataFrame) -> list[SoilLayer]:
                 d10=_opt(row.get("D10(mm)")),
                 is_alluvial=bool(row.get("沖積層", True)),
                 cohesion=_opt(row.get("c(kN/m2)")),
+                k_ep=_opt(row.get("KEP")),
             )
         )
     return layers
@@ -138,6 +140,7 @@ def df_from_layers(layers: list[SoilLayer]) -> pd.DataFrame:
                 "D10(mm)": layer.d10,
                 "沖積層": layer.is_alluvial,
                 "c(kN/m2)": layer.cohesion,
+                "KEP": layer.k_ep,
             }
         )
     return pd.DataFrame(rows)
@@ -406,6 +409,34 @@ def _render_level2(result) -> None:
         )
     elif result.yielded:
         st.caption(f"許容塑性率 μa = {result.allowable_ductility:g}")
+
+    sr = result.soil_reaction
+    if sr is not None:
+        st.markdown("**水平地盤反力度と上限値 pHU の突合(診断)**")
+        if sr.ok:
+            st.success(
+                f"地盤反力度は上限値以下(最大で pHU の {sr.max_ratio * 100:.0f}%)"
+            )
+        else:
+            top, bottom = sr.exceeded_depth_range
+            st.error(
+                f"深さ {top:.1f}〜{bottom:.1f} m で pHU を超過"
+                f"(最大 {sr.max_ratio * 100:.0f}%)。"
+                "この区間の地盤抵抗を過大に評価しており、結果は非安全側。"
+            )
+        st.caption(
+            "判定に用いた杭: "
+            + ("最前列" if sr.front_row else "最前列以外(砂質地盤で pHU が 1/2)")
+        )
+        st.line_chart(
+            pd.DataFrame(
+                {
+                    "深さ (m)": [p.depth for p in sr.points],
+                    "地盤反力度 p (kN/m²)": [p.reaction for p in sr.points],
+                    "上限値 pHU (kN/m²)": [p.limit for p in sr.points],
+                }
+            ).set_index("深さ (m)")
+        )
 
     if result.steps:
         st.markdown("**荷重〜変位関係(プッシュオーバー曲線)**")
