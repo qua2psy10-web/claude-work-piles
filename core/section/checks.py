@@ -23,6 +23,19 @@ from core.standards import (
 )
 
 
+# 応力度照査が未実装の杭種と、その理由(未照合の基準値)。
+# 断面諸元(A・I・E)は core.capacity.section で全杭種算定できるため、
+# 支持力・バネ定数・変位法・断面力分布は利用できる。
+UNVERIFIED_ALLOWABLES: dict[PileType, str] = {
+    PileType.PHC: (
+        "高強度コンクリートのヤング係数・許容応力度、および有効プレストレス"
+    ),
+    PileType.SC: "鋼管とコンクリートの合成断面に対する許容応力度",
+    PileType.RC: "既製RC杭のコンクリート・鉄筋の許容応力度",
+    PileType.H_STEEL: "H形鋼(SS材・SM材)の許容応力度",
+}
+
+
 @dataclass(frozen=True)
 class StressCheck:
     """1つの応力度照査項目。"""
@@ -90,7 +103,9 @@ def check_section(
     if pile.pile_type in (PileType.STEEL_PIPE, PileType.STEEL_PIPE_SOIL_CEMENT):
         return _check_steel_pipe(pile, material, increase, depth, axial, moment)
     raise NotImplementedError(
-        f"{pile.pile_type.value}の応力度照査は未実装です(フェーズ3で対応)"
+        f"{pile.pile_type.value}の応力度照査は未実装です。"
+        f"{UNVERIFIED_ALLOWABLES.get(pile.pile_type, '許容応力度')}が"
+        "未照合のためです(断面諸元の算定と安定計算は可能です)"
     )
 
 

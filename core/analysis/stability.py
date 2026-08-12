@@ -1,7 +1,7 @@
 """安定計算のオーケストレーション(支持力・バネ定数・変位法・照査)。"""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from core.analysis.displacement import PileReaction, StabilityResult, solve_stability
 from core.analysis.section_forces import SectionForceDistribution, distribution
@@ -86,6 +86,7 @@ class StabilityReport:
     bearing: BearingCapacity
     cases: list[CaseResult]
     negative_friction: NegativeFrictionResult | None = None
+    notes: list[str] = field(default_factory=list)  # 省略した照査などの注記
 
     @property
     def all_ok(self) -> bool:
@@ -121,6 +122,7 @@ def analyze(
     kv = axial_spring(pile, section)
     delta_a = allowable_displacement(pile.diameter)
 
+    notes: list[str] = []
     cases: list[CaseResult] = []
     for load in loads:
         springs = lateral_springs(
@@ -171,13 +173,20 @@ def analyze(
         )
         stress_head = stress_max = head_result = None
         if material is not None:
-            stress_head = check_section(
-                pile, material, load.case, 0.0, critical.axial, critical.moment
-            )
-            peak = forces.max_underground_moment
-            stress_max = check_section(
-                pile, material, load.case, peak.depth, critical.axial, peak.moment
-            )
+            try:
+                stress_head = check_section(
+                    pile, material, load.case, 0.0, critical.axial, critical.moment
+                )
+                peak = forces.max_underground_moment
+                stress_max = check_section(
+                    pile, material, load.case, peak.depth, critical.axial, peak.moment
+                )
+            except NotImplementedError as exc:
+                # 杭体の応力度照査が未実装の杭種でも、支持力・変位の照査は
+                # 有効なので計算を続け、省略した旨を注記として残す。
+                stress_head = stress_max = None
+                if str(exc) not in notes:
+                    notes.append(str(exc))
             head_result = check_pile_head(
                 pile_diameter=pile.diameter,
                 footing_height=footing.height,
@@ -217,5 +226,9 @@ def analyze(
         )
 
     return StabilityReport(
-        section=section, bearing=bearing, cases=cases, negative_friction=nf
+        section=section,
+        bearing=bearing,
+        cases=cases,
+        negative_friction=nf,
+        notes=notes,
     )

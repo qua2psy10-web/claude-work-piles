@@ -416,4 +416,8 @@ def _summary_section(report: StabilityReport) -> str:
     s.append(
         f"\n**総合判定: {'OK' if report.all_ok else 'NG'}**\n"
     )
+    if report.notes:
+        s.append("\n### 省略した照査\n")
+        for note in report.notes:
+            s.append(f"- {note}\n")
     return "".join(s)

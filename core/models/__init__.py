@@ -1,9 +1,11 @@
 from core.models.loads import FootingLoads, LoadCase
 from core.models.pile import (
+    BendingAxis,
     ConstructionMethod,
     Footing,
     PileArrangement,
     PileSpec,
+    HSection,
     PileType,
     SupportType,
 )
@@ -12,10 +14,12 @@ from core.models.project import DesignProject, SeismicConditions
 from core.models.soil import SoilLayer, SoilProfile, SoilType
 
 __all__ = [
+    "BendingAxis",
     "ConstructionMethod",
     "DesignProject",
     "Footing",
     "FootingLoads",
+    "HSection",
     "LoadCase",
     "PileArrangement",
     "PileSpec",

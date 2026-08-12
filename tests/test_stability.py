@@ -88,6 +88,51 @@ def test_check_judgement():
     assert push.judgement == ("OK" if push.ratio <= 1.0 else "NG")
 
 
+def test_unimplemented_stress_check_is_skipped_with_note():
+    """応力度照査が未実装の杭種でも、支持力・変位の照査は行い注記を残す。"""
+    from core.section.checks import MaterialSpec
+    from core.section.rc import RebarLayout
+
+    _, arrangement, footing, profile = sample_inputs()
+    phc = PileSpec(
+        pile_type=PileType.PHC,
+        method=ConstructionMethod.DRIVEN,
+        diameter=0.6,
+        length=18.0,
+        concrete_thickness=90.0,
+    )
+    material = MaterialSpec(
+        fck=30, rebar=RebarLayout(count=12, diameter_mm=25.0, cover_mm=60.0)
+    )
+    loads = [FootingLoads(case=LoadCase.PERMANENT, v=3000.0, h=200.0, m=800.0)]
+    report = analyze(phc, arrangement, footing, profile, loads, fck=30, material=material)
+
+    case = report.cases[0]
+    # 支持力・変位の照査は行われている
+    assert {c.name for c in case.checks} >= {"押込み支持力", "水平変位"}
+    # 杭体の応力度照査は省略され、理由が注記される
+    assert case.stress_head is None
+    assert case.stress_max is None
+    assert report.notes
+    assert any("PHC杭" in note for note in report.notes)
+    # 杭頭結合部の照査は杭種によらず行われる
+    assert case.pile_head is not None
+
+
+def test_implemented_pile_type_has_no_notes():
+    pile, arrangement, footing, profile = sample_inputs()
+    from core.section.checks import MaterialSpec
+    from core.section.rc import RebarLayout
+
+    material = MaterialSpec(
+        fck=24, rebar=RebarLayout(count=24, diameter_mm=25.0, cover_mm=125.0)
+    )
+    loads = [FootingLoads(case=LoadCase.PERMANENT, v=9000.0, h=300.0, m=1500.0)]
+    report = analyze(pile, arrangement, footing, profile, loads, material=material)
+    assert report.notes == []
+    assert report.cases[0].stress_head is not None
+
+
 def test_excessive_load_is_ng():
     pile, arrangement, footing, profile = sample_inputs()
     loads = [FootingLoads(case=LoadCase.PERMANENT, v=200000.0, h=0.0, m=0.0)]

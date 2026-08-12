@@ -74,15 +74,34 @@ def test_steel_pipe_requires_thickness():
         pile_section(pile)
 
 
-def test_unimplemented_pile_type():
+def test_hollow_concrete_pile_requires_thickness():
+    """PHC・RC杭はコンクリート部の肉厚が必要。"""
     pile = PileSpec(
         pile_type=PileType.PHC,
         method=ConstructionMethod.DRIVEN,
         diameter=0.6,
         length=20.0,
     )
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ValueError, match="肉厚"):
         pile_section(pile)
+
+
+def test_hollow_concrete_pile_section():
+    """PHC杭 φ600・肉厚90mm の中空円形断面。"""
+    pile = PileSpec(
+        pile_type=PileType.PHC,
+        method=ConstructionMethod.DRIVEN,
+        diameter=0.6,
+        length=20.0,
+        concrete_thickness=90.0,
+    )
+    section = pile_section(pile, fck=24)
+    d_in = 0.6 - 2 * 0.09
+    assert section.area == pytest.approx(math.pi * (0.6**2 - d_in**2) / 4)
+    assert section.inertia == pytest.approx(math.pi * (0.6**4 - d_in**4) / 64)
+    assert section.young == EC_CONCRETE[24]
+    # 中実断面より小さい
+    assert section.area < math.pi * 0.6**2 / 4
 
 
 def test_axial_spring_hand_calculation():

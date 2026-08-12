@@ -12,10 +12,12 @@ import streamlit as st
 from core.analysis.comparison import compare
 from core.analysis.stability import StabilityReport, analyze
 from core.models import (
+    BendingAxis,
     ConstructionMethod,
     DesignProject,
     Footing,
     FootingLoads,
+    HSection,
     LoadCase,
     PileArrangement,
     PileSpec,
@@ -220,6 +222,8 @@ def _render_stability(report: StabilityReport) -> None:
         st.success("全ケース OK")
     else:
         st.error("NG の照査項目があります")
+    for note in report.notes:
+        st.warning(f"省略した照査: {note}")
 
     with st.expander("軸方向支持力(道示Ⅳ 12.4)", expanded=True):
         c1, c2, c3 = st.columns(3)
@@ -642,6 +646,57 @@ def main() -> None:
             )
         st.info(f"杭本数: {int(nx) * int(ny)} 本")
 
+        with st.expander("既製杭・H鋼杭の断面(該当杭種のみ使用)"):
+            st.caption(
+                "PHC杭・RC杭・SC杭は中空断面のコンクリート肉厚、"
+                "H鋼杭はH形断面の寸法が必要。これらの杭種は断面諸元の算定と"
+                "安定計算はできるが、**杭体の応力度照査は未実装**"
+                "(許容応力度が未照合のため)。"
+            )
+            ecol1, ecol2 = st.columns(2)
+            with ecol1:
+                concrete_thickness = st.number_input(
+                    "コンクリート肉厚 (mm)", 0.0, 500.0,
+                    value=(
+                        loaded.pile.concrete_thickness
+                        if loaded and loaded.pile and loaded.pile.concrete_thickness
+                        else 90.0
+                    ),
+                    step=5.0, key=f"ct_{nonce}",
+                    help="PHC杭・RC杭・SC杭の中空断面の肉厚",
+                )
+                bending_axis = st.selectbox(
+                    "H鋼杭の曲げ軸", [a.value for a in BendingAxis],
+                    index=(
+                        [a for a in BendingAxis].index(loaded.pile.bending_axis)
+                        if loaded and loaded.pile else 1
+                    ),
+                    key=f"ba_{nonce}",
+                    help="既定は安全側の弱軸",
+                )
+            with ecol2:
+                hs = loaded.pile.h_section if loaded and loaded.pile else None
+                h_h = st.number_input(
+                    "H形鋼 せい H (mm)", 0.0, 2000.0,
+                    value=(hs.height if hs else 400.0), step=10.0,
+                    key=f"hh_{nonce}",
+                )
+                h_b = st.number_input(
+                    "フランジ幅 B (mm)", 0.0, 2000.0,
+                    value=(hs.width if hs else 400.0), step=10.0,
+                    key=f"hb_{nonce}",
+                )
+                h_tw = st.number_input(
+                    "ウェブ厚 t1 (mm)", 0.0, 100.0,
+                    value=(hs.web_thickness if hs else 13.0), step=1.0,
+                    key=f"htw_{nonce}",
+                )
+                h_tf = st.number_input(
+                    "フランジ厚 t2 (mm)", 0.0, 100.0,
+                    value=(hs.flange_thickness if hs else 21.0), step=1.0,
+                    key=f"htf_{nonce}",
+                )
+
         st.markdown("**フーチング**")
         fcol1, fcol2, fcol3, fcol4 = st.columns(4)
         with fcol1:
@@ -807,6 +862,17 @@ def main() -> None:
             and sc_diameter > 0
             else None
         ),
+        concrete_thickness=concrete_thickness if concrete_thickness > 0 else None,
+        h_section=(
+            HSection(
+                height=h_h, width=h_b,
+                web_thickness=h_tw, flange_thickness=h_tf,
+            )
+            if PileType(pile_type) == PileType.H_STEEL
+            and min(h_h, h_b, h_tw, h_tf) > 0
+            else None
+        ),
+        bending_axis=BendingAxis(bending_axis),
     )
     arrangement_spec = PileArrangement(
         nx=int(nx), ny=int(ny), spacing_x=spacing, spacing_y=spacing

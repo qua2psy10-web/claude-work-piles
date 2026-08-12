@@ -39,6 +39,33 @@ class SupportType(str, Enum):
     FRICTION = "摩擦杭"
 
 
+class HSection(BaseModel):
+    """H形鋼の断面寸法 (mm)。"""
+
+    height: float = Field(gt=0, description="せい H (mm)")
+    width: float = Field(gt=0, description="フランジ幅 B (mm)")
+    web_thickness: float = Field(gt=0, description="ウェブ厚 t1 (mm)")
+    flange_thickness: float = Field(gt=0, description="フランジ厚 t2 (mm)")
+
+    def validated(self) -> HSection:
+        if self.height <= 2.0 * self.flange_thickness:
+            raise ValueError(
+                f"せい {self.height} mm がフランジ厚の2倍以下です"
+            )
+        if self.width <= self.web_thickness:
+            raise ValueError(
+                f"フランジ幅 {self.width} mm がウェブ厚以下です"
+            )
+        return self
+
+
+class BendingAxis(str, Enum):
+    """H鋼杭の曲げを受ける軸。"""
+
+    STRONG = "強軸"
+    WEAK = "弱軸"
+
+
 class PileSpec(BaseModel):
     pile_type: PileType
     method: ConstructionMethod
@@ -63,6 +90,18 @@ class PileSpec(BaseModel):
         default=None,
         gt=0,
         description="鋼管ソイルセメント杭のソイルセメント柱径 (m)。先端面積に用いる",
+    )
+    concrete_thickness: float | None = Field(
+        default=None,
+        gt=0,
+        description="中空コンクリート杭(PHC・RC)およびSC杭のコンクリート部肉厚 (mm)",
+    )
+    h_section: HSection | None = Field(
+        default=None, description="H鋼杭の断面寸法"
+    )
+    bending_axis: BendingAxis = Field(
+        default=BendingAxis.WEAK,
+        description="H鋼杭で曲げを受ける軸。既定は安全側の弱軸",
     )
 
 
