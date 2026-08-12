@@ -26,7 +26,7 @@ from core.section.pile_head import (
     punching_shear_area,
 )
 from core.section.rc import RebarLayout
-from core.standards import SIGMA_A_STEEL, SIGMA_SA_REBAR, STRESS_INCREASE
+from core.standards import SIGMA_A_STEEL, SIGMA_SA_REBAR_STATIC, STRESS_INCREASE
 
 CIP = PileSpec(
     pile_type=PileType.CAST_IN_PLACE,
@@ -119,11 +119,14 @@ def test_cast_in_place_checks_concrete_and_rebar():
     assert "コンクリート圧縮応力度" in names
     assert "鉄筋引張応力度" in names
     assert result.rc_detail is not None
-    # 許容値は水中施工を考慮して 0.8 倍(σck=24 → 8×0.8 = 6.4)
+    # 水中施工の許容曲げ圧縮は表-4.2.5(σck=24 → 8.0)。**0.8 倍の低減はない**
     concrete = next(c for c in result.checks if "コンクリート" in c.name)
-    assert concrete.allowable == pytest.approx(6.4)
+    assert concrete.allowable == pytest.approx(8.0)
     rebar = next(c for c in result.checks if "鉄筋" in c.name)
-    assert rebar.allowable == pytest.approx(SIGMA_SA_REBAR["SD345"])
+    # 場所打ち杭は水中施工なので「水中又は地下水位以下に設ける部材」の 160
+    assert rebar.allowable == pytest.approx(
+        SIGMA_SA_REBAR_STATIC["水中又は地下水位以下に設ける部材"]["SD345"]
+    )
 
 
 def test_cast_in_place_uses_the_fixed_young_modulus_ratio_15():
@@ -159,11 +162,64 @@ def test_cast_in_place_uses_the_fixed_young_modulus_ratio_15():
 
 
 def test_cast_in_place_rejects_a_grade_without_an_allowable_stress():
-    """Ec の表(21〜60)にあっても許容応力度の表(21〜40)にない σck は弾く。"""
-    material = dataclasses.replace(MATERIAL, fck=50)
-    with pytest.raises(ValueError, match="許容曲げ圧縮応力度"):
-        check_section(
-            CIP, material, LoadCase.PERMANENT, depth=0.0, axial=1500.0, moment=800.0
+    """水中コンクリートの表(24〜30)にない σck は弾く。
+
+    Ec の表は 21〜60 を持つが、水中で施工する場所打ち杭の許容応力度は
+    道示Ⅳ 表-4.2.5 が σck = 24/27/30 のみを規定する。
+    """
+    for fck in (21, 50):
+        material = dataclasses.replace(MATERIAL, fck=fck)
+        with pytest.raises(ValueError, match="表-4.2.5"):
+            check_section(
+                CIP, material, LoadCase.PERMANENT,
+                depth=0.0, axial=1500.0, moment=800.0,
+            )
+
+
+def test_cast_in_place_rebar_allowable_by_load_case():
+    """場所打ち杭の鉄筋は「水中又は地下水位以下に設ける部材」の区分。
+
+    SD345: 常時 160、暴風時 160×1.25 = 200、地震時は区分が変わり
+    軸方向鉄筋の基本値 200 に割増 1.50 を乗じて 300。
+    """
+    expected = {
+        LoadCase.PERMANENT: 160.0,
+        LoadCase.STORM: 200.0,
+        LoadCase.LEVEL1_EQ: 300.0,
+    }
+    for case, allowable in expected.items():
+        result = check_section(
+            CIP, MATERIAL, case, depth=0.0, axial=1500.0, moment=800.0
+        )
+        rebar = next(c for c in result.checks if "鉄筋" in c.name)
+        assert rebar.allowable == pytest.approx(allowable), case
+
+
+def test_sd390_static_allowable_is_180_not_200():
+    """SD390 の常時の基本値は SD345 と同じ 180(かつては 200 で非安全側)。"""
+    from core.section.checks import rebar_tension_allowable
+
+    for grade in ("SD345", "SD390", "SD490"):
+        assert rebar_tension_allowable(
+            grade, LoadCase.PERMANENT, underwater=False, increase=1.0
+        ) == 180.0
+        assert rebar_tension_allowable(
+            grade, LoadCase.PERMANENT, underwater=True, increase=1.0
+        ) == 160.0
+    # 地震時だけ材質で差がつく
+    seismic = {
+        g: rebar_tension_allowable(g, LoadCase.LEVEL1_EQ, underwater=True, increase=1.0)
+        for g in ("SD345", "SD390", "SD490")
+    }
+    assert seismic == {"SD345": 200.0, "SD390": 230.0, "SD490": 290.0}
+
+
+def test_removed_rebar_grade_is_rejected_with_a_reason():
+    from core.section.checks import rebar_tension_allowable
+
+    with pytest.raises(ValueError, match="削除"):
+        rebar_tension_allowable(
+            "SD295", LoadCase.PERMANENT, underwater=True, increase=1.0
         )
 
 
@@ -354,11 +410,23 @@ def test_removed_rebar_grade_is_rejected():
 def test_unknown_rebar_grade_is_rejected():
     material = MaterialSpec(
         fck=24,
-        rebar_grade="SD490",
+        rebar_grade="SD500",  # 存在しない材質
         rebar=RebarLayout(count=24, diameter_mm=25.0, cover_mm=125.0),
     )
     with pytest.raises(ValueError, match="未対応"):
         check_section(CIP, material, LoadCase.PERMANENT, 0.0, 1500.0, 800.0)
+
+
+def test_sd490_is_now_supported():
+    """H24 で新たに規定された SD490 を扱えること。"""
+    material = MaterialSpec(
+        fck=24,
+        rebar_grade="SD490",
+        rebar=RebarLayout(count=24, diameter_mm=25.0, cover_mm=125.0),
+    )
+    result = check_section(CIP, material, LoadCase.LEVEL1_EQ, 0.0, 1500.0, 800.0)
+    rebar = next(c for c in result.checks if "鉄筋" in c.name)
+    assert rebar.allowable == pytest.approx(290.0 * 1.5)
 
 
 def test_pile_head_bearing_ignores_uplift():

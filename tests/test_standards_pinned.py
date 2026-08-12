@@ -284,37 +284,108 @@ def test_stress_increase_factors():
 
 
 def test_concrete_allowable_stresses():
-    """道示Ⅲ 表-3.2.1。σck=21〜30 は提供解説資料と完全一致。"""
-    assert st.SIGMA_CA_CONCRETE == {21: 7.0, 24: 8.0, 27: 9.0, 30: 10.0, 40: 13.0}
-    assert st.SIGMA_CAG_CONCRETE == {21: 5.5, 24: 6.5, 27: 7.0, 30: 8.0, 40: 10.0}
-    assert st.TAU_A1_CONCRETE == {21: 0.35, 24: 0.38, 27: 0.40, 30: 0.42, 40: 0.50}
-    assert st.TAU_A2_CONCRETE == {21: 1.6, 24: 1.7, 27: 1.8, 30: 1.9, 40: 2.2}
+    """道示Ⅳ(H24) 表-4.2.1。**原典(スキャン)で照合済み**(第23回)。
+
+    表は σck = 21〜30 のみを規定する。σck = 40 の行は原典に存在しないため
+    削除した。τa1 は 0.35/0.38/0.40/0.42(約1.5倍、非安全側)を
+    0.22/0.23/0.24/0.25 に、σcag は 27/30 を 7.0/8.0 → 7.5/8.5 に修正した。
+    """
+    assert st.SIGMA_CA_CONCRETE == {21: 7.0, 24: 8.0, 27: 9.0, 30: 10.0}
+    assert st.SIGMA_CAG_CONCRETE == {21: 5.5, 24: 6.5, 27: 7.5, 30: 8.5}
+    assert st.TAU_A1_CONCRETE == {21: 0.22, 24: 0.23, 27: 0.24, 30: 0.25}
+    assert st.TAU_A2_CONCRETE == {21: 1.6, 24: 1.7, 27: 1.8, 30: 1.9}
+    assert st.TAU_C_CONCRETE == {21: 0.33, 24: 0.35, 27: 0.36, 30: 0.37}
     # 軸圧縮は曲げ圧縮より小さい
     for grade in st.SIGMA_CA_CONCRETE:
         assert st.SIGMA_CAG_CONCRETE[grade] < st.SIGMA_CA_CONCRETE[grade]
+    # 40 は表外(解説に「21〜30 の範囲について規定している」と明記)
+    assert 40 not in st.SIGMA_CA_CONCRETE
+
+
+def test_tau_a1_equals_tau_c_divided_by_the_safety_factor_1_5():
+    """τa1 = τc / 1.5(原典 4.2 の解説)。2つの表の整合を固定する。"""
+    for grade, tau_c in st.TAU_C_CONCRETE.items():
+        assert st.TAU_A1_CONCRETE[grade] == pytest.approx(tau_c / 1.5, abs=0.005)
+
+
+def test_underwater_concrete_is_not_a_0_8_reduction():
+    """水中施工は表-4.2.5 で扱う。0.8 倍の低減は道示Ⅳ に存在しない。
+
+    表-4.2.5 の許容応力度は、同じ**設計基準強度**に対する表-4.2.1 の値と
+    一致する。水中施工は「呼び強度 → 水中コンクリートの設計基準強度」の
+    読替え(30→24、36→27、40→30)で考慮されている。低減されるのは
+    付着応力度のみである。
+    """
+    assert not hasattr(st, "CIP_CONCRETE_REDUCTION")
+    assert sorted(st.UNDERWATER_CONCRETE_ALLOWABLE) == [24, 27, 30]
+    for fck, uw in st.UNDERWATER_CONCRETE_ALLOWABLE.items():
+        assert uw.bending_compression == st.SIGMA_CA_CONCRETE[fck]
+        assert uw.axial_compression == st.SIGMA_CAG_CONCRETE[fck]
+        assert uw.tau_a1 == st.TAU_A1_CONCRETE[fck]
+        assert uw.tau_a2 == st.TAU_A2_CONCRETE[fck]
+        # 付着応力度だけは大気中より小さい
+        assert uw.bond < st.BOND_ALLOWABLE_CONCRETE[fck]
+    # 呼び強度との対応
+    assert [uw.nominal_strength for uw in st.UNDERWATER_CONCRETE_ALLOWABLE.values()] == [
+        30, 36, 40
+    ]
+
+
+def test_shear_correction_factor_tables():
+    """道示Ⅳ 表-4.2.2(ce)・表-4.2.3(cpt)、式(4.2.1) の cN。"""
+    assert st.SHEAR_CE_BY_DEPTH == (
+        (300.0, 1.4), (1000.0, 1.0), (3000.0, 0.7), (5000.0, 0.6), (10000.0, 0.5)
+    )
+    assert st.SHEAR_CPT_BY_RATIO == (
+        (0.1, 0.7), (0.2, 0.9), (0.3, 1.0), (0.5, 1.2), (1.0, 1.5)
+    )
+    assert (st.SHEAR_CN_MIN, st.SHEAR_CN_MAX) == (1.0, 2.0)
+    assert st.SHEAR_REBAR_YIELD_CAP == 345.0
+    # ce は有効高が大きいほど小さく、cpt は鉄筋比が大きいほど大きい
+    assert [c for _, c in st.SHEAR_CE_BY_DEPTH] == sorted(
+        (c for _, c in st.SHEAR_CE_BY_DEPTH), reverse=True
+    )
+    assert [c for _, c in st.SHEAR_CPT_BY_RATIO] == sorted(
+        c for _, c in st.SHEAR_CPT_BY_RATIO
+    )
 
 
 def test_rebar_allowable_stresses():
-    """道示Ⅳ 表4.3.1。SD345=180 は2ソースで確認済み。
+    """道示Ⅳ(H24) 表-4.3.1。**原典(スキャン)で照合済み**(第23回)。
 
-    SD295・SR235 は H24 改定で下部構造編の表から削除されたため、
-    許容引張応力度が規定されておらず本表には含めない。
+    表は荷重の組合せの区分ごとに基本値を与える。従来は区分を持たず
+    SD345=180 / SD390=200 の1本だけで、SD390 の常時(正しくは 180)と
+    水中部材の 160 を扱えていなかった(いずれも非安全側)。
     """
-    assert st.SIGMA_SA_REBAR == {"SD345": 180.0, "SD390": 200.0}
-    assert st.SIGMA_SA_REBAR_SEVERE == {"SD345": 160.0, "SD390": 180.0}
-    # 腐食性環境の許容値は一般の部材以下
-    for grade in st.SIGMA_SA_REBAR:
-        assert st.SIGMA_SA_REBAR_SEVERE[grade] <= st.SIGMA_SA_REBAR[grade]
+    assert st.SIGMA_SA_REBAR_STATIC == {
+        "一般の部材": {"SD345": 180.0, "SD390": 180.0, "SD490": 180.0},
+        "水中又は地下水位以下に設ける部材": {
+            "SD345": 160.0, "SD390": 160.0, "SD490": 160.0
+        },
+    }
+    assert st.SIGMA_SA_REBAR_SEISMIC == {
+        "軸方向鉄筋": {"SD345": 200.0, "SD390": 230.0, "SD490": 290.0},
+        "上記以外": {"SD345": 200.0, "SD390": 200.0, "SD490": 200.0},
+    }
+    assert st.SIGMA_CA_REBAR == {"SD345": 200.0, "SD390": 230.0, "SD490": 290.0}
+    # 水中部材は一般の部材以下
+    for grade in st.REBAR_GRADES:
+        assert (
+            st.SIGMA_SA_REBAR_STATIC["水中又は地下水位以下に設ける部材"][grade]
+            <= st.SIGMA_SA_REBAR_STATIC["一般の部材"][grade]
+        )
     # 削除された材質は表に含まれない
     assert "SD295" in st.REMOVED_REBAR_GRADES
     assert "SR235" in st.REMOVED_REBAR_GRADES
-    assert not (st.REMOVED_REBAR_GRADES & set(st.SIGMA_SA_REBAR))
+    assert not (st.REMOVED_REBAR_GRADES & set(st.REBAR_GRADES))
+    assert st.HIGH_GRADE_REBAR_MIN_FCK == 30
 
 
 def test_other_allowable_stresses():
-    assert st.CIP_CONCRETE_REDUCTION == 0.8
     assert st.SIGMA_A_STEEL["SKK400"] == 140.0
     assert st.SIGMA_A_STEEL["SKK490"] == 185.0
+    assert st.TAU_A_STEEL == {"SKK400": 80.0, "SKK490": 105.0}
+    assert st.STEEL_ALLOWABLE_MAX_THICKNESS == 40.0
     assert st.TAU_A_PUNCHING[24] == 0.90
     assert st.NF_SAFETY_FACTOR == 1.2
 
@@ -387,7 +458,10 @@ def test_punching_shear_table_covers_21_to_30_only():
 
 
 def test_rebar_tables_share_grades():
-    assert set(st.SIGMA_SA_REBAR) == set(st.SIGMA_SA_REBAR_SEVERE)
+    for table in (*st.SIGMA_SA_REBAR_STATIC.values(),
+                  *st.SIGMA_SA_REBAR_SEISMIC.values(),
+                  st.SIGMA_CA_REBAR):
+        assert set(table) == set(st.REBAR_GRADES)
 
 
 def test_stress_increase_matches_safety_factor_cases():
@@ -460,7 +534,7 @@ def test_cast_in_place_high_grade_rebar_reduces_ductility():
         # 通常値より必ず小さい(None = 塑性化不可)
         assert value is None or value < st.ALLOWABLE_DUCTILITY_PILE[key]
     # 実装している鉄筋材質のうち高強度側と整合すること
-    assert "SD390" in st.SIGMA_SA_REBAR
+    assert "SD390" in st.REBAR_GRADES
 
 
 def test_allowable_footing_rotation_pinned():

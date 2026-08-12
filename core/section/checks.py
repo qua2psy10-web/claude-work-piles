@@ -13,16 +13,18 @@ from core.models.loads import LoadCase
 from core.models.pile import PileSpec, PileType
 from core.section.rc import RebarLayout, RcStressResult, analyze_circular_rc
 from core.standards import (
-    CIP_CONCRETE_REDUCTION,
     EC_CONCRETE,
     PHC_BENDING_TENSION_BY_PRESTRESS,
     PRECAST_CONCRETE_ALLOWABLE,
+    REBAR_GRADES,
     REMOVED_REBAR_GRADES,
     SIGMA_A_STEEL,
-    SIGMA_CA_CONCRETE,
-    SIGMA_SA_REBAR,
+    SIGMA_SA_REBAR_SEISMIC,
+    SIGMA_SA_REBAR_STATIC,
     STRESS_INCREASE,
+    UNDERWATER_CONCRETE_ALLOWABLE,
     YOUNG_MODULUS_RATIO_RC,
+    RebarMember,
 )
 
 
@@ -119,7 +121,7 @@ def check_section(
     increase = STRESS_INCREASE[case.value]
     if pile.pile_type == PileType.CAST_IN_PLACE:
         return _check_cast_in_place(
-            pile, material, increase, depth, axial, moment
+            pile, material, increase, depth, axial, moment, case
         )
     if pile.pile_type in (PileType.STEEL_PIPE, PileType.STEEL_PIPE_SOIL_CEMENT):
         return _check_steel_pipe(pile, material, increase, depth, axial, moment)
@@ -209,6 +211,48 @@ def _check_phc(
     )
 
 
+def rebar_tension_allowable(
+    grade: str, case: LoadCase, underwater: bool, increase: float
+) -> float:
+    """鉄筋の許容引張応力度 (N/mm2)(道示Ⅳ(H24) 4.3、表-4.3.1)。
+
+    表は荷重の組合せの区分ごとに**基本値**を与えており、その基本値に
+    表-4.1.1 の割増係数を乗じる。
+
+    * 衝突荷重又は地震の影響を**含まない**組合せ(常時・暴風時)
+        一般の部材 180、水中又は地下水位以下に設ける部材 160
+    * **含む**組合せ(地震時)
+        軸方向鉄筋 200(SD345)/ 230(SD390)/ 290(SD490)
+
+    したがって、たとえば SD345 の軸方向鉄筋は
+    常時 180、暴風時 180×1.25 = 225、レベル1地震時 200×1.50 = 300 となる。
+
+    Parameters
+    ----------
+    underwater:
+        水中又は地下水位以下に設ける部材か。場所打ち杭は水中施工であり、
+        地下水位以下にもなるため真とする。地震時の区分にはこの区別がない。
+    """
+    if grade in REMOVED_REBAR_GRADES:
+        raise ValueError(
+            f"{grade} は H24 の道示Ⅳ下部構造編で鉄筋の種類から削除されており、"
+            f"許容引張応力度が規定されていません。対応材質: {list(REBAR_GRADES)}"
+        )
+    if case.is_seismic:
+        # 地震の影響を含む組合せ。杭体の軸方向鉄筋なので「軸方向鉄筋」の行
+        table = SIGMA_SA_REBAR_SEISMIC[RebarMember.AXIAL.value]
+    else:
+        key = (
+            RebarMember.UNDERWATER.value if underwater else RebarMember.GENERAL.value
+        )
+        table = SIGMA_SA_REBAR_STATIC[key]
+    if grade not in table:
+        raise ValueError(
+            f"鉄筋材質 {grade} は未対応です。対応材質: {sorted(table)}"
+        )
+    return table[grade] * increase
+
+
 def _check_cast_in_place(
     pile: PileSpec,
     material: MaterialSpec,
@@ -216,18 +260,22 @@ def _check_cast_in_place(
     depth: float,
     axial: float,
     moment: float,
+    case: LoadCase,
 ) -> PileStressResult:
     if material.rebar is None:
         raise ValueError("場所打ち杭の照査には軸方向鉄筋の入力が必要です")
     if material.fck not in EC_CONCRETE:
         raise ValueError(f"σck={material.fck} は未対応です")
-    if material.fck not in SIGMA_CA_CONCRETE:
+    # 場所打ち杭は水中施工。許容応力度は表-4.2.5(水中コンクリートの設計基準
+    # 強度で引く)による。**0.8 倍の低減は道示Ⅳ に存在しない**
+    if material.fck not in UNDERWATER_CONCRETE_ALLOWABLE:
         raise ValueError(
-            f"σck={material.fck} の許容曲げ圧縮応力度が未定義です。"
-            f"対応値: {sorted(SIGMA_CA_CONCRETE)}"
+            f"水中で施工する場所打ち杭の σck={material.fck} は道示Ⅳ 表-4.2.5 に"
+            f"規定がありません。対応値: {sorted(UNDERWATER_CONCRETE_ALLOWABLE)}"
+            "(呼び強度 30/36/40 に対する水中コンクリートの設計基準強度)"
         )
     ec = EC_CONCRETE[material.fck]
-    # ヤング係数比は Es/Ec ではなく一定値 15(道示Ⅲ 3.3)
+    # ヤング係数比は Es/Ec ではなく一定値 15(道示Ⅳ 5.1.2(3))
     detail = analyze_circular_rc(
         diameter=pile.diameter,
         rebar=material.rebar,
@@ -236,20 +284,12 @@ def _check_cast_in_place(
         axial=axial,
         moment=moment,
     )
-    # 場所打ち杭は水中施工を考慮してコンクリートの許容応力度を低減する
-    sigma_ca = SIGMA_CA_CONCRETE[material.fck] * CIP_CONCRETE_REDUCTION * increase
-    if material.rebar_grade in REMOVED_REBAR_GRADES:
-        raise ValueError(
-            f"{material.rebar_grade} は H24 の道示Ⅳ下部構造編で鉄筋の種類から"
-            "削除されており、許容引張応力度が規定されていません。"
-            f"対応材質: {sorted(SIGMA_SA_REBAR)}"
-        )
-    if material.rebar_grade not in SIGMA_SA_REBAR:
-        raise ValueError(
-            f"鉄筋材質 {material.rebar_grade} は未対応です。"
-            f"対応材質: {sorted(SIGMA_SA_REBAR)}"
-        )
-    sigma_sa = SIGMA_SA_REBAR[material.rebar_grade] * increase
+    sigma_ca = (
+        UNDERWATER_CONCRETE_ALLOWABLE[material.fck].bending_compression * increase
+    )
+    sigma_sa = rebar_tension_allowable(
+        material.rebar_grade, case, underwater=True, increase=increase
+    )
     checks = [
         StressCheck("コンクリート圧縮応力度", detail.sigma_c, sigma_ca),
         StressCheck("鉄筋引張応力度", detail.sigma_s_tension, sigma_sa),

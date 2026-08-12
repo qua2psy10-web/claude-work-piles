@@ -37,8 +37,9 @@ from core.section.rc import RebarLayout
 from core.soil.liquefaction import SoilReduction, assess_liquefaction
 from core.standards import (
     EC_CONCRETE,
+    SIGMA_CA_CONCRETE,
     SIGMA_A_STEEL,
-    SIGMA_SA_REBAR,
+    REBAR_GRADES,
     E0Method,
     GroundMotionType,
     GroundType,
@@ -897,12 +898,17 @@ def main() -> None:
         with mcol1:
             fck = st.selectbox(
                 "σck (N/mm²)",
-                sorted(EC_CONCRETE), index=1, key=f"fck_{nonce}",
-                help="場所打ち杭のコンクリート設計基準強度",
+                sorted(SIGMA_CA_CONCRETE), index=1, key=f"fck_{nonce}",
+                help=(
+                    "コンクリートの設計基準強度。道示Ⅳ 表-4.2.1 は 21〜30 を"
+                    "規定する。**場所打ち杭は水中施工**なので許容応力度は"
+                    "表-4.2.5(σck = 24/27/30。呼び強度 30/36/40 に対応)に"
+                    "よる。21 を選ぶと場所打ち杭の照査はエラーになる。"
+                ),
             )
         with mcol2:
             rebar_grade = st.selectbox(
-                "鉄筋材質", list(SIGMA_SA_REBAR), index=0, key=f"rg_{nonce}",
+                "鉄筋材質", list(REBAR_GRADES), index=0, key=f"rg_{nonce}",
                 help=(
                     "SD295・SR235 は H24 の道示Ⅳ下部構造編で鉄筋の種類から"
                     "削除されたため選択できません"
