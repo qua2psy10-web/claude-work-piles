@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from core.analysis.comparison import compare
+from core.analysis.level2 import run_level2
 from core.analysis.stability import StabilityReport, analyze
 from core.models import (
     BendingAxis,
@@ -347,6 +348,83 @@ def _render_stability(report: StabilityReport) -> None:
                 )
 
 
+def _render_level2(result) -> None:
+    """レベル2地震時の照査結果を表示する。"""
+    if result.response is None:
+        st.error(
+            "設計レベル2荷重(λ = 1)に達する前に釣合いが保てなくなった。"
+            "基礎が保有水平耐力に達していると考えられる。"
+        )
+    else:
+        cols = st.columns(4)
+        cols[0].metric("応答変位 δr", f"{result.response.u * 1000:.1f} mm")
+        cols[1].metric("応答水平力 H", f"{result.response.h:.0f} kN")
+        if result.yield_point is not None:
+            cols[2].metric(
+                "降伏変位 δy", f"{result.yield_point.displacement * 1000:.1f} mm"
+            )
+            cols[3].metric(
+                "降伏水平力 Hy", f"{result.yield_point.horizontal_force:.0f} kN"
+            )
+        else:
+            cols[2].metric("降伏変位 δy", "降伏せず")
+            cols[3].metric("降伏水平力 Hy", "—")
+
+    if result.yield_point is not None:
+        st.info(f"基礎の降伏: {result.yield_point.reason}")
+    mu = result.response_ductility
+    if mu is not None:
+        st.markdown(f"**応答塑性率 μr = {mu:.2f}**")
+
+    if result.checks:
+        st.markdown("**照査結果**")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "照査項目": c.name,
+                        "応答値": _round(c.demand, 3),
+                        "制限値": _round(c.capacity, 3),
+                        "単位": c.unit,
+                        "比": _round(c.ratio, 2),
+                        "判定": c.judgement,
+                        "備考": c.note,
+                    }
+                    for c in result.checks
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+        st.success("全照査 OK") if result.all_ok else st.error("NG の照査項目あり")
+
+    missing = []
+    if result.allowable_ductility is None:
+        missing.append("許容塑性率 μa")
+    if result.allowable_displacement is None:
+        missing.append("許容変位 δa")
+    if missing:
+        st.warning(
+            f"{' と '.join(missing)}が未入力のため、該当する照査を行っていない。"
+            "道示Ⅴ の表が未照合のため既定値は用意していない"
+            "(誤った既定値で判定するより未実施と明示する方針)。"
+        )
+
+    if result.steps:
+        st.markdown("**荷重〜変位関係(プッシュオーバー曲線)**")
+        curve = pd.DataFrame(
+            {
+                "水平変位 (mm)": [s.u * 1000 for s in result.steps],
+                "水平力 H (kN)": [s.h for s in result.steps],
+            }
+        ).set_index("水平変位 (mm)")
+        st.line_chart(curve)
+
+    with st.expander("この解析の制限事項", expanded=True):
+        for note in result.notes:
+            st.markdown(f"- {note}")
+
+
 def _render_section_forces(case) -> None:
     """杭体の断面力分布を図表で表示する。"""
     if case.forces is None:
@@ -515,8 +593,13 @@ def main() -> None:
             ),
         )
 
-    tab_soil, tab_pile, tab_load, tab_liq, tab_stab, tab_cmp = st.tabs(
-        ["地盤", "杭・フーチング", "荷重", "液状化判定", "安定計算", "杭種比較"]
+    (
+        tab_soil, tab_pile, tab_load, tab_liq, tab_stab, tab_l2, tab_cmp
+    ) = st.tabs(
+        [
+            "地盤", "杭・フーチング", "荷重", "液状化判定", "安定計算",
+            "レベル2地震時", "杭種比較",
+        ]
     )
 
     with tab_soil:
@@ -933,6 +1016,78 @@ def main() -> None:
         elif st.session_state.get("report") is not None:
             _render_stability(st.session_state.report)
 
+    with tab_l2:
+        st.subheader("レベル2地震時の照査(道示Ⅴ(H24) 地震時保有水平耐力法)")
+        st.caption(
+            "水平力を漸増させるプッシュオーバー解析により、基礎の降伏点と"
+            "応答塑性率を求める。**杭の軸方向バネのみ**を非線形(バイリニア)"
+            "として扱う簡易解析であり、水平地盤反力・杭体の非線形は"
+            "考慮していない。制限事項は結果欄に表示される。"
+        )
+        l2c1, l2c2, l2c3 = st.columns(3)
+        with l2c1:
+            l2_v = st.number_input(
+                "V (kN)", 0.0, 1.0e6, value=9000.0, step=100.0, key=f"l2v_{nonce}",
+                help="死荷重。プッシュオーバー中は一定に保つ",
+            )
+            l2_h = st.number_input(
+                "H (kN)", 0.0, 1.0e6, value=4000.0, step=100.0, key=f"l2h_{nonce}",
+                help="設計レベル2地震時の水平力(λ = 1 に対応)",
+            )
+        with l2c2:
+            l2_m = st.number_input(
+                "M (kN·m)", -1.0e7, 1.0e7, value=20000.0, step=500.0,
+                key=f"l2m_{nonce}",
+            )
+            l2_my = st.number_input(
+                "杭体の降伏曲げモーメント My (kN·m)", 0.0, 1.0e6,
+                value=0.0, step=100.0, key=f"l2my_{nonce}",
+                help=(
+                    "0 のときは未入力扱い。鋼管杭・鋼管ソイルセメント杭では"
+                    "降伏点 σy から自動算定する"
+                ),
+            )
+        with l2c3:
+            l2_mua = st.number_input(
+                "許容塑性率 μa", 0.0, 20.0, value=0.0, step=0.5,
+                key=f"l2mua_{nonce}",
+                help=(
+                    "道示Ⅴ の表が未照合のため既定値を持たない。"
+                    "0 のときは応答塑性率の照査を行わない"
+                ),
+            )
+            l2_da = st.number_input(
+                "許容変位 δa (m)", 0.0, 5.0, value=0.0, step=0.01,
+                key=f"l2da_{nonce}",
+                help="0 のときは応答変位の照査を行わない",
+            )
+        if profile is None:
+            st.error(f"地層データにエラーがあります: {profile_error}")
+        elif st.button("レベル2照査を実行", key=f"l2run_{nonce}"):
+            try:
+                l2_result = run_level2(
+                    pile_spec,
+                    arrangement_spec,
+                    footing_spec,
+                    profile,
+                    v_load=l2_v,
+                    h_load=l2_h,
+                    m_load=l2_m,
+                    fck=int(fck),
+                    yield_moment=l2_my if l2_my > 0 else None,
+                    steel_grade=steel_grade,
+                    allowable_ductility=l2_mua if l2_mua > 0 else None,
+                    allowable_displacement=l2_da if l2_da > 0 else None,
+                    e0_method=E0Method(e0_method),
+                )
+            except (ValueError, NotImplementedError, RuntimeError) as exc:
+                st.error(f"計算エラー: {exc}")
+            else:
+                st.session_state.level2 = l2_result
+                _render_level2(l2_result)
+        elif st.session_state.get("level2") is not None:
+            _render_level2(st.session_state.level2)
+
     with tab_cmp:
         st.subheader("杭種・工法の比較(形式選定の支援)")
         st.caption(
@@ -1010,12 +1165,17 @@ def main() -> None:
             st.caption("計算書")
             report = st.session_state.get("report")
             liq = st.session_state.get("liquefaction")
+            l2 = st.session_state.get("level2")
             if report is None:
                 st.caption("安定計算を実行すると照査結果が計算書に含まれます。")
+            if l2 is None:
+                st.caption(
+                    "レベル2照査を実行すると計算書に第7章が追加されます。"
+                )
             try:
                 st.download_button(
                     "計算書(Markdown)",
-                    data=build_report(project, report, liq),
+                    data=build_report(project, report, liq, l2),
                     file_name=f"{name or 'report'}.md",
                     mime="text/markdown",
                 )

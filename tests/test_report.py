@@ -161,3 +161,32 @@ def test_excel_without_analysis():
     data = build_workbook(sample_project())
     wb = load_workbook(io.BytesIO(data))
     assert wb.sheetnames == ["設計条件"]
+
+
+def test_level2_section_is_included():
+    """レベル2の結果を渡すと計算書に第7章が追加されること。"""
+    from core.analysis.level2 import AxialSpringModel, analyze_level2
+    from core.models import PileArrangement
+
+    arrangement = PileArrangement(nx=3, ny=3, spacing_x=2.5, spacing_y=2.5)
+    axial = AxialSpringModel(kv=5.0e5, push_limit=1500.0, pull_limit=1500.0)
+    result = analyze_level2(
+        arrangement, axial, k1=2.0e5, k2=-1.0e5, k4=1.0e5,
+        v_load=9000.0, h_load=2000.0, m_load=8000.0,
+        allowable_ductility=4.0, allowable_displacement=0.3,
+    )
+    project = sample_project()
+    md = build_report(project, level2=result)
+
+    assert "レベル2地震時の照査" in md
+    assert "応答塑性率" in md
+    assert "制限事項" in md
+    # 制限事項が省略されずすべて出ていること
+    from core.analysis.level2 import LIMITATIONS
+    for limitation in LIMITATIONS:
+        assert limitation in md
+
+
+def test_level2_section_absent_when_not_run():
+    md = build_report(sample_project())
+    assert "レベル2地震時の照査" not in md

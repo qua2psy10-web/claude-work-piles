@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+from core.analysis.level2 import Level2Result
 from core.analysis.stability import CaseResult, StabilityReport
 from core.models.project import DesignProject
 from core.soil.liquefaction import LiquefactionAssessment
@@ -28,6 +29,7 @@ def build_report(
     project: DesignProject,
     report: StabilityReport | None = None,
     liquefaction: LiquefactionAssessment | None = None,
+    level2: Level2Result | None = None,
 ) -> str:
     """設計計算書を Markdown で生成する。"""
     parts: list[str] = []
@@ -47,6 +49,8 @@ def build_report(
         if report.negative_friction is not None:
             parts.append(_nf_section(report))
         parts.append(_summary_section(report))
+    if level2 is not None:
+        parts.append(_level2_section(level2))
     parts.append(
         "\n---\n\n"
         "本計算書は道示H24に基づく実装により作成したものであるが、"
@@ -420,4 +424,67 @@ def _summary_section(report: StabilityReport) -> str:
         s.append("\n### 省略した照査\n")
         for note in report.notes:
             s.append(f"- {note}\n")
+    return "".join(s)
+
+
+def _level2_section(result: Level2Result) -> str:
+    """レベル2地震時の照査(道示Ⅴ 地震時保有水平耐力法)。"""
+    s = ["\n## 7. レベル2地震時の照査(道示Ⅴ(H24))\n"]
+    s.append(
+        "水平力を漸増させるプッシュオーバー解析により基礎の降伏点を求め、"
+        "応答塑性率を照査する。\n"
+    )
+
+    if result.response is None:
+        s.append(
+            "\n> **設計レベル2荷重に達する前に釣合いが保てなくなった。**"
+            "基礎が保有水平耐力に達していると考えられる。\n"
+        )
+    else:
+        rows = [
+            ["応答変位 δr", f"{_num(result.response.u * 1000, 2)} mm"],
+            ["応答水平力 H", f"{_num(result.response.h, 1)} kN"],
+        ]
+        if result.yield_point is not None:
+            rows.append(
+                ["降伏変位 δy", f"{_num(result.yield_point.displacement * 1000, 2)} mm"]
+            )
+            rows.append(
+                [
+                    "降伏水平力 Hy",
+                    f"{_num(result.yield_point.horizontal_force, 1)} kN",
+                ]
+            )
+            rows.append(["降伏の理由", result.yield_point.reason])
+        else:
+            rows.append(["基礎の降伏", "設計荷重の範囲では降伏しない"])
+        mu = result.response_ductility
+        if mu is not None:
+            rows.append(["応答塑性率 μr = δr/δy", f"{mu:.2f}"])
+        s.append("\n### 7.1 応答値\n")
+        s.append(_table(["項目", "値"], rows))
+
+    if result.checks:
+        s.append("\n### 7.2 照査結果\n")
+        s.append(
+            _table(
+                ["照査項目", "応答値", "制限値", "単位", "比", "判定"],
+                [
+                    [
+                        c.name,
+                        _num(c.demand, 3),
+                        _num(c.capacity, 3),
+                        c.unit,
+                        f"{c.ratio:.3f}",
+                        c.judgement,
+                    ]
+                    for c in result.checks
+                ],
+            )
+        )
+        s.append(f"\n**判定: {'OK' if result.all_ok else 'NG'}**\n")
+
+    s.append("\n### 7.3 この解析の制限事項\n")
+    for note in result.notes:
+        s.append(f"- {note}\n")
     return "".join(s)

@@ -111,3 +111,26 @@ def test_loads_skips_blank_rows():
         ignore_index=True,
     )
     assert len(loads_from_df(df)) == 2
+
+
+def test_level2_button_produces_result():
+    at = run_app()
+    button = next(b for b in at.button if "レベル2照査" in b.label)
+    button.click().run()
+    assert not at.exception
+    assert not any("計算エラー" in e.value for e in at.error)
+    labels = [m.label for m in at.metric]
+    assert "応答変位 δr" in labels
+    assert "降伏変位 δy" in labels
+    # 制限事項が必ず提示される
+    texts = [m.value for m in at.markdown]
+    assert any("非線形" in t or "pHU" in t for t in texts)
+
+
+def test_level2_without_allowables_warns_instead_of_assuming():
+    """μa・δa 未入力時は既定値を置かず、照査しない旨を警告すること。"""
+    at = run_app()
+    button = next(b for b in at.button if "レベル2照査" in b.label)
+    button.click().run()
+    assert not at.exception
+    assert any("未入力" in w.value for w in at.warning)

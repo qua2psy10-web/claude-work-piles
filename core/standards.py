@@ -394,6 +394,15 @@ REMOVED_REBAR_GRADES: frozenset[str] = frozenset({"SD295", "SD295A", "SD295B", "
 # 鋼材の許容軸方向引張応力度 σa (N/mm2)(道示Ⅱ 表-3.2.1 相当)
 SIGMA_A_STEEL: dict[str, float] = {"SKK400": 140.0, "SKK490": 185.0}
 
+# 鋼管杭の降伏点 σy (N/mm2)(JIS A 5525)。レベル2地震時の降伏曲げモーメント
+# My の算定に用いる。
+#
+# .. note::
+#    許容応力度 σa(140 / 185)との比は 235/140 = 1.68、315/185 = 1.70 であり、
+#    許容応力度が降伏点を安全率 1.7 で除して定められていることと整合する。
+#    この整合性は値の裏付けの一つだが、原典との照合は済んでいない。
+SIGMA_Y_STEEL: dict[str, float] = {"SKK400": 235.0, "SKK490": 315.0}
+
 
 @dataclass(frozen=True)
 class PrecastConcreteAllowable:

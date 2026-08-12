@@ -393,3 +393,12 @@ def test_h_steel_reference_allowable_is_not_used_for_checks():
         "SM490相当": (185.0, 277.0),
     }
     assert PileType.H_STEEL in UNIMPLEMENTED_STRESS_CHECK
+
+
+def test_steel_yield_points_are_consistent_with_allowables():
+    """鋼管杭の降伏点と許容応力度の比が安全率 1.7 と整合すること。"""
+    assert st.SIGMA_Y_STEEL == {"SKK400": 235.0, "SKK490": 315.0}
+    assert set(st.SIGMA_Y_STEEL) == set(st.SIGMA_A_STEEL)
+    for grade, sigma_y in st.SIGMA_Y_STEEL.items():
+        ratio = sigma_y / st.SIGMA_A_STEEL[grade]
+        assert 1.65 <= ratio <= 1.75, f"{grade}: σy/σa = {ratio:.2f}"
