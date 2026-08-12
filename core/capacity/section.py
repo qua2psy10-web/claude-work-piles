@@ -23,11 +23,25 @@ HOLLOW_CONCRETE_TYPES = (PileType.PHC, PileType.RC)
 STEEL_TUBE_TYPES = (PileType.STEEL_PIPE, PileType.STEEL_PIPE_SOIL_CEMENT)
 
 
-def _concrete_young(fck: int) -> float:
+def _concrete_young(fck: int, override: float | None = None) -> float:
+    """コンクリートのヤング係数 Ec (kN/m2)。
+
+    ``override`` が与えられればそれを用いる。既製杭(PHC・SC)の標準である
+    σck = 80 N/mm² はヤング係数の表の範囲外であり、その値は道示ではなく
+    JIS/業界側の資料(製品の断面性能表など)に拠るため、本ソフトでは
+    **表に持たず利用者の入力に委ねる**。詳細は docs/VERIFICATION.md の
+    「σck = 80 の Ec」を参照。
+    """
+    if override is not None:
+        if override <= 0:
+            raise ValueError("ヤング係数 Ec は正の値である必要があります")
+        return override
     if fck not in EC_CONCRETE:
         raise ValueError(
             f"σck={fck} のヤング係数が未定義です。対応値: {sorted(EC_CONCRETE)}"
-            "(PHC杭の標準である高強度コンクリートは未照合です)"
+            "。既製杭の標準である σck = 80 N/mm² は表の範囲外のため、"
+            "PileSpec.concrete_young にメーカーの断面性能表等の Ec を"
+            "直接指定してください"
         )
     return EC_CONCRETE[fck]
 
@@ -90,7 +104,11 @@ def pile_section(
     if pile.pile_type == PileType.CAST_IN_PLACE:
         area = math.pi * d**2 / 4.0
         inertia = math.pi * d**4 / 64.0
-        return PileSection(area=area, inertia=inertia, young=_concrete_young(fck))
+        return PileSection(
+            area=area,
+            inertia=inertia,
+            young=_concrete_young(fck, pile.concrete_young),
+        )
 
     if pile.pile_type in STEEL_TUBE_TYPES:
         if pile.wall_thickness is None:
@@ -108,7 +126,11 @@ def pile_section(
                 "concrete_thickness (mm) の入力が必要です"
             )
         area, inertia = hollow_circle(d, pile.concrete_thickness / 1000.0)
-        return PileSection(area=area, inertia=inertia, young=_concrete_young(fck))
+        return PileSection(
+            area=area,
+            inertia=inertia,
+            young=_concrete_young(fck, pile.concrete_young),
+        )
 
     if pile.pile_type == PileType.SC:
         return _sc_section(pile, fck, corrosion_mm)
@@ -145,7 +167,7 @@ def _sc_section(pile: PileSpec, fck: int, corrosion_mm: float) -> PileSection:
         concrete_outer, pile.concrete_thickness / 1000.0
     )
 
-    ec = _concrete_young(fck)
+    ec = _concrete_young(fck, pile.concrete_young)
     n = E_STEEL / ec
     return PileSection(
         area=steel_area + concrete_area / n,

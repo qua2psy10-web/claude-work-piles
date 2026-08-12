@@ -1,4 +1,5 @@
 """杭体応力度照査・杭頭結合部・負の周面摩擦力のテスト。"""
+import dataclasses
 import math
 
 import pytest
@@ -123,6 +124,47 @@ def test_cast_in_place_checks_concrete_and_rebar():
     assert concrete.allowable == pytest.approx(6.4)
     rebar = next(c for c in result.checks if "鉄筋" in c.name)
     assert rebar.allowable == pytest.approx(SIGMA_SA_REBAR["SD345"])
+
+
+def test_cast_in_place_uses_the_fixed_young_modulus_ratio_15():
+    """RC の応力度計算は n = 15 を用いる(n = Es/Ec ではない)。
+
+    かつて Es/Ec(σck=24 で 8.0)を用いていたが、道示Ⅲ 3.3 は σck に
+    よらない一定値 15 を規定する。n = 8 は鉄筋引張応力度を約 18% 過小に
+    評価する**非安全側**の誤りであったため、その再発をここで止める。
+    """
+    result = check_section(
+        CIP, MATERIAL, LoadCase.PERMANENT, depth=0.0, axial=1500.0, moment=800.0
+    )
+    detail = result.rc_detail
+    assert detail is not None
+    # n = 15 での値。n = 8 なら鉄筋 122.7、コンクリート 13.886 になる
+    assert detail.sigma_s_tension == pytest.approx(145.332, abs=0.01)
+    assert detail.sigma_c == pytest.approx(11.038, abs=0.01)
+
+    # 独立に、同じ断面を n = 15 で解いた結果と一致すること
+    from core.section.rc import analyze_circular_rc
+    from core.standards import EC_CONCRETE, YOUNG_MODULUS_RATIO_RC
+
+    assert YOUNG_MODULUS_RATIO_RC == 15.0
+    expected = analyze_circular_rc(
+        diameter=CIP.diameter,
+        rebar=MATERIAL.rebar,
+        ec=EC_CONCRETE[MATERIAL.fck],
+        n_ratio=YOUNG_MODULUS_RATIO_RC,
+        axial=1500.0,
+        moment=800.0,
+    )
+    assert detail.sigma_s_tension == pytest.approx(expected.sigma_s_tension)
+
+
+def test_cast_in_place_rejects_a_grade_without_an_allowable_stress():
+    """Ec の表(21〜60)にあっても許容応力度の表(21〜40)にない σck は弾く。"""
+    material = dataclasses.replace(MATERIAL, fck=50)
+    with pytest.raises(ValueError, match="許容曲げ圧縮応力度"):
+        check_section(
+            CIP, material, LoadCase.PERMANENT, depth=0.0, axial=1500.0, moment=800.0
+        )
 
 
 def test_cast_in_place_requires_rebar():

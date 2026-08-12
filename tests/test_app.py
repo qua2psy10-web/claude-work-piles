@@ -113,6 +113,21 @@ def test_loads_skips_blank_rows():
     assert len(loads_from_df(df)) == 2
 
 
+def test_young_modulus_can_be_entered_for_precast_piles():
+    """σck = 80 の Ec は表にないため、直接入力できること(既定は表引き)。"""
+    at = run_app()
+    field = next(
+        n for n in at.number_input if "ヤング係数" in n.label
+    )
+    assert field.value == 0.0  # 0 = 未入力(σck から表引き)
+    assert at.session_state["project"].pile.concrete_young is None
+
+    field.set_value(40000.0).run()
+    assert not at.exception
+    # 入力単位は N/mm²、内部は kN/m²(1 N/mm² = 1000 kN/m²)
+    assert at.session_state["project"].pile.concrete_young == pytest.approx(4.0e7)
+
+
 def test_level2_button_produces_result():
     at = run_app()
     button = next(b for b in at.button if "レベル2照査" in b.label)

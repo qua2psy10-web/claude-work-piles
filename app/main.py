@@ -784,6 +784,23 @@ def main() -> None:
                     step=5.0, key=f"ct_{nonce}",
                     help="PHC杭・RC杭・SC杭の中空断面の肉厚",
                 )
+                concrete_young = st.number_input(
+                    "コンクリートのヤング係数 Ec (N/mm²)", 0.0, 100000.0,
+                    value=(
+                        loaded.pile.concrete_young / 1000.0
+                        if loaded and loaded.pile and loaded.pile.concrete_young
+                        else 0.0
+                    ),
+                    step=1000.0, key=f"cy_{nonce}",
+                    help=(
+                        "0 のときは σck から表引きする(道示Ⅲ 表-3.3.3)。"
+                        "PHC杭・SC杭の標準である σck = 80 N/mm² は同表の範囲外"
+                        "(表は 21〜60)でヤング係数が規定されていないため、"
+                        "メーカーの断面性能表等の Ec をここに入力する"
+                        "(例: 4.0×10⁴ N/mm² なら 40000)。"
+                        "断面剛性 EI のみに影響し、許容応力度には影響しない。"
+                    ),
+                )
                 bending_axis = st.selectbox(
                     "H鋼杭の曲げ軸", [a.value for a in BendingAxis],
                     index=(
@@ -991,6 +1008,9 @@ def main() -> None:
             else None
         ),
         concrete_thickness=concrete_thickness if concrete_thickness > 0 else None,
+        concrete_young=(
+            concrete_young * 1000.0 if concrete_young > 0 else None
+        ),
         h_section=(
             HSection(
                 height=h_h, width=h_b,

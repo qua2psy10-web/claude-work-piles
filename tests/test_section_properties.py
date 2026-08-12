@@ -45,17 +45,60 @@ def test_rc_pile_section():
     assert section.young == EC_CONCRETE[30]
 
 
-def test_unknown_concrete_grade_is_reported():
-    """PHC杭の標準である高強度コンクリートは未照合のためエラーとする。"""
-    pile = PileSpec(
+def phc_pile(**update) -> PileSpec:
+    return PileSpec(
         pile_type=PileType.PHC,
         method=ConstructionMethod.DRIVEN,
         diameter=0.6,
         length=20.0,
         concrete_thickness=90.0,
+    ).model_copy(update=update)
+
+
+def test_unknown_concrete_grade_is_reported():
+    """σck = 80 は道示Ⅲ 表-3.3.3(21〜60)の範囲外。外挿せずエラーとする。"""
+    with pytest.raises(ValueError, match="未定義") as exc:
+        pile_section(phc_pile(), fck=80)
+    # 打開策(Ec の直接入力)を案内していること
+    assert "concrete_young" in str(exc.value)
+
+
+def test_young_modulus_can_be_given_directly():
+    """メーカーの断面性能表等の Ec を直接指定すると σck の表引きを上書きする。"""
+    ec = 4.0e7  # kN/m2 = 4.0×10^4 N/mm2
+    section = pile_section(phc_pile(concrete_young=ec), fck=80)
+    assert section.young == ec
+    # 幾何は σck に依存しない
+    assert section.inertia == pytest.approx(hollow_circle(0.6, 0.09)[1])
+    # 表にある σck を指定していても、入力があればそちらが優先される
+    assert pile_section(phc_pile(concrete_young=ec), fck=24).young == ec
+
+
+def test_direct_young_modulus_applies_to_the_sc_transformed_section():
+    """SC杭の換算断面比 n = Es/Ec にも直接入力の Ec が効くこと。"""
+    ec = 4.0e7
+    pile = sc_pile().model_copy(update={"concrete_young": ec})
+    section = pile_section(pile, fck=80)
+    t_steel = (9.0 - 1.0) / 1000.0
+    steel = hollow_circle(0.6, t_steel)
+    concrete = hollow_circle(0.6 - 2 * t_steel, 0.08)
+    assert section.area == pytest.approx(steel[0] + concrete[0] / (E_STEEL / ec))
+    # Ec が大きいほどコンクリートの寄与が大きい
+    softer = pile_section(
+        pile.model_copy(update={"concrete_young": 2.5e7}), fck=80
     )
-    with pytest.raises(ValueError, match="未定義"):
-        pile_section(pile, fck=80)
+    assert section.inertia > softer.inertia
+
+
+def test_direct_young_modulus_applies_to_cast_in_place():
+    pile = PileSpec(
+        pile_type=PileType.CAST_IN_PLACE,
+        method=ConstructionMethod.CAST_IN_PLACE,
+        diameter=1.0,
+        length=20.0,
+        concrete_young=3.3e7,
+    )
+    assert pile_section(pile, fck=24).young == 3.3e7
 
 
 # --- SC杭 -------------------------------------------------------------------

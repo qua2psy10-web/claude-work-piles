@@ -96,6 +96,16 @@ class PileSpec(BaseModel):
         gt=0,
         description="中空コンクリート杭(PHC・RC)およびSC杭のコンクリート部肉厚 (mm)",
     )
+    concrete_young: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "コンクリートのヤング係数 Ec (kN/m2) を直接指定する場合の値。"
+            "既製杭(PHC・SC)の標準である σck = 80 N/mm2 はヤング係数の表の"
+            "範囲外のため、メーカーの断面性能表等から Ec を与えるための入口。"
+            "指定するとヤング係数の表引き(σck → Ec)を上書きする"
+        ),
+    )
     h_section: HSection | None = Field(
         default=None, description="H鋼杭の断面寸法"
     )

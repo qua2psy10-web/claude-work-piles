@@ -14,7 +14,6 @@ from core.models.pile import PileSpec, PileType
 from core.section.rc import RebarLayout, RcStressResult, analyze_circular_rc
 from core.standards import (
     CIP_CONCRETE_REDUCTION,
-    E_REBAR,
     EC_CONCRETE,
     PHC_BENDING_TENSION_BY_PRESTRESS,
     PRECAST_CONCRETE_ALLOWABLE,
@@ -23,6 +22,7 @@ from core.standards import (
     SIGMA_CA_CONCRETE,
     SIGMA_SA_REBAR,
     STRESS_INCREASE,
+    YOUNG_MODULUS_RATIO_RC,
 )
 
 
@@ -221,13 +221,18 @@ def _check_cast_in_place(
         raise ValueError("場所打ち杭の照査には軸方向鉄筋の入力が必要です")
     if material.fck not in EC_CONCRETE:
         raise ValueError(f"σck={material.fck} は未対応です")
+    if material.fck not in SIGMA_CA_CONCRETE:
+        raise ValueError(
+            f"σck={material.fck} の許容曲げ圧縮応力度が未定義です。"
+            f"対応値: {sorted(SIGMA_CA_CONCRETE)}"
+        )
     ec = EC_CONCRETE[material.fck]
-    n_ratio = E_REBAR / ec
+    # ヤング係数比は Es/Ec ではなく一定値 15(道示Ⅲ 3.3)
     detail = analyze_circular_rc(
         diameter=pile.diameter,
         rebar=material.rebar,
         ec=ec,
-        n_ratio=n_ratio,
+        n_ratio=YOUNG_MODULUS_RATIO_RC,
         axial=axial,
         moment=moment,
     )

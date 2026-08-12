@@ -326,16 +326,45 @@ def test_material_constants():
     assert st.GAMMA_W == 9.8
 
 
-def test_concrete_tables_share_grades():
-    """コンクリート関連の表は同じ σck を網羅していること。"""
-    grades = set(st.EC_CONCRETE)
-    for table in (
+def test_allowable_stress_tables_share_grades_and_have_a_young_modulus():
+    """許容応力度の表どうしは同じ σck を網羅し、いずれも Ec を持つこと。
+
+    Ec の表(道示Ⅲ 表-3.3.3)は σck = 21〜60 を規定するが、下部構造の
+    許容応力度(道示Ⅳ)は 21〜40 までである。したがって両者は一致せず、
+    許容応力度の表が Ec の表の**部分集合**であることを要件とする。
+    """
+    tables = (
         st.SIGMA_CA_CONCRETE,
         st.SIGMA_CAG_CONCRETE,
         st.TAU_A1_CONCRETE,
         st.TAU_A2_CONCRETE,
-    ):
+    )
+    grades = set(tables[0])
+    for table in tables:
         assert set(table) == grades
+    assert grades < set(st.EC_CONCRETE)
+
+
+def test_young_modulus_table_matches_doushi_iii_table_3_3_3():
+    """道示Ⅲ 表-3.3.3 の全範囲。σck = 80 は表になく、持たないこと。"""
+    assert st.EC_CONCRETE == {
+        21: 2.35e7,
+        24: 2.50e7,
+        27: 2.65e7,
+        30: 2.80e7,
+        40: 3.10e7,
+        50: 3.30e7,
+        60: 3.50e7,
+    }
+    # 既製杭(PHC・SC)の標準強度は表の範囲外。外挿せず入力に委ねている
+    assert 80 not in st.EC_CONCRETE
+
+
+def test_young_modulus_ratio_is_the_fixed_value_15():
+    """RC の応力度計算のヤング係数比は Es/Ec ではなく一定値 15(道示Ⅲ 3.3)。"""
+    assert st.YOUNG_MODULUS_RATIO_RC == 15.0
+    # Es/Ec から算出した値とは一致しない(σck=24 なら 8.0)
+    assert st.E_REBAR / st.EC_CONCRETE[24] != st.YOUNG_MODULUS_RATIO_RC
 
 
 def test_punching_shear_table_covers_21_to_30_only():

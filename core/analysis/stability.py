@@ -130,12 +130,22 @@ def analyze(
 
     notes: list[str] = []
     if pile.pile_type in (PileType.PHC, PileType.SC):
-        notes.append(
-            f"{pile.pile_type.value}の標準である σck = 80 N/mm² のヤング係数は"
-            "未照合のため、断面剛性 EI には入力した σck の Ec を用いている"
-            "(断面力・変位に影響する)。許容応力度は既製コンクリート杭として"
-            "規定された値を用いており、σck の入力値には依存しない。"
-        )
+        if pile.concrete_young is not None:
+            notes.append(
+                f"{pile.pile_type.value}の断面剛性 EI には、入力されたヤング係数 "
+                f"Ec = {pile.concrete_young / 1.0e7:.2f}×10⁴ N/mm² を用いている。"
+                "許容応力度は既製コンクリート杭として規定された値を用いており、"
+                "σck の入力値には依存しない。"
+            )
+        else:
+            notes.append(
+                f"{pile.pile_type.value}の標準である σck = 80 N/mm² は道示Ⅲ "
+                "表-3.3.3(σck = 21〜60)の範囲外であり、ヤング係数が規定されて"
+                "いない。断面剛性 EI には入力した σck の Ec を用いているため"
+                "(断面力・変位に影響する)、メーカーの断面性能表等の Ec を"
+                "直接入力することを推奨する。許容応力度は既製コンクリート杭として"
+                "規定された値を用いており、σck の入力値には依存しない。"
+            )
     if reduction is not None and reduction.has_reduction:
         span = reduction.reduced_depth_range()
         notes.append(

@@ -141,7 +141,40 @@ def test_phc_stress_check_runs_with_young_modulus_note():
     assert {c.name for c in case.stress_head.checks} >= {
         "軸圧縮応力度", "曲げ圧縮応力度"
     }
-    assert any("ヤング係数" in note for note in report.notes)
+    assert any("表-3.3.3" in note for note in report.notes)
+
+
+def test_phc_with_a_given_young_modulus_changes_the_stiffness_and_the_note():
+    """Ec を直接入力すると EI が変わり、注記も「入力値を使った」旨に変わる。"""
+    from core.section.checks import MaterialSpec
+
+    _, arrangement, footing, profile = sample_inputs()
+    phc = PileSpec(
+        pile_type=PileType.PHC,
+        method=ConstructionMethod.DRIVEN,
+        diameter=0.6,
+        length=18.0,
+        concrete_thickness=90.0,
+    )
+    material = MaterialSpec(fck=30, effective_prestress=8.0)
+    loads = [FootingLoads(case=LoadCase.PERMANENT, v=3000.0, h=200.0, m=800.0)]
+    kwargs = dict(fck=30, material=material)
+    base = analyze(phc, arrangement, footing, profile, loads, **kwargs)
+    stiff = analyze(
+        phc.model_copy(update={"concrete_young": 4.0e7}),
+        arrangement, footing, profile, loads, **kwargs,
+    )
+
+    # 剛性が上がると杭頭変位は小さくなる
+    assert stiff.cases[0].result.u < base.cases[0].result.u
+    # 注記は「範囲外」の警告から「入力値を用いた」旨に変わる
+    assert any("表-3.3.3" in n for n in base.notes)
+    assert not any("表-3.3.3" in n for n in stiff.notes)
+    assert any("入力されたヤング係数" in n for n in stiff.notes)
+    # 許容応力度は既製杭の規定値なので Ec には依存しない
+    assert [c.allowable for c in stiff.cases[0].stress_head.checks] == [
+        c.allowable for c in base.cases[0].stress_head.checks
+    ]
 
 
 def test_implemented_pile_type_has_no_notes():
