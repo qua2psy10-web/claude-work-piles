@@ -233,3 +233,38 @@ def test_level2_report_includes_soil_reaction_diagnosis():
     # KEP を極端に小さくしたので超過し、非安全側である旨が出る
     assert not result.soil_reaction.ok
     assert "非安全側" in md
+
+
+def test_report_shows_the_liquefaction_reduction():
+    """DE を反映した場合、計算書のバネ定数欄に低減係数が出ること。"""
+    from tests.test_soil_reduction import (
+        ARRANGEMENT,
+        FOOTING,
+        PILE,
+        liquefiable_profile,
+        sample_reduction,
+    )
+    from core.models import FootingLoads, LoadCase
+
+    loads = [FootingLoads(case=LoadCase.LEVEL1_EQ, v=9000.0, h=2000.0, m=8000.0)]
+    report = analyze(
+        PILE, ARRANGEMENT, FOOTING, liquefiable_profile(), loads,
+        reduction=sample_reduction(),
+    )
+    md = build_report(sample_project(), report)
+    assert "液状化による低減係数 DE" in md
+    assert "液状化による土質定数の低減" in md  # 注記
+
+
+def test_report_omits_the_reduction_row_when_not_applied():
+    from tests.test_soil_reduction import (
+        ARRANGEMENT,
+        FOOTING,
+        PILE,
+        liquefiable_profile,
+    )
+    from core.models import FootingLoads, LoadCase
+
+    loads = [FootingLoads(case=LoadCase.LEVEL1_EQ, v=9000.0, h=2000.0, m=8000.0)]
+    report = analyze(PILE, ARRANGEMENT, FOOTING, liquefiable_profile(), loads)
+    assert "液状化による低減係数" not in build_report(sample_project(), report)

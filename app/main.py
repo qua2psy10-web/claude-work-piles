@@ -34,12 +34,13 @@ from core.report.excel import build_workbook
 from core.report.markdown import build_report
 from core.section.checks import MaterialSpec
 from core.section.rc import RebarLayout
-from core.soil.liquefaction import assess_liquefaction
+from core.soil.liquefaction import SoilReduction, assess_liquefaction
 from core.standards import (
     EC_CONCRETE,
     SIGMA_A_STEEL,
     SIGMA_SA_REBAR,
     E0Method,
+    GroundMotionType,
     GroundType,
     StructureType,
 )
@@ -228,7 +229,7 @@ def _render_stability(report: StabilityReport) -> None:
     else:
         st.error("NG の照査項目があります")
     for note in report.notes:
-        st.warning(f"省略した照査: {note}")
+        st.warning(note)
 
     with st.expander("軸方向支持力(道示Ⅳ 12.4)", expanded=True):
         c1, c2, c3 = st.columns(3)
@@ -1027,6 +1028,34 @@ def main() -> None:
         st.caption(
             "直杭・杭頭剛結、フーチング剛体を仮定。杭種は場所打ち杭・鋼管杭に対応。"
         )
+        assessment = st.session_state.get("liquefaction")
+        use_reduction = st.checkbox(
+            "液状化による土質定数の低減(DE)を反映する",
+            value=False, key=f"usede_{nonce}",
+            disabled=assessment is None,
+            help=(
+                "先に「液状化判定」タブで判定を実行すると選択できる。"
+                "DE はレベル2地震動に対する判定から得られる値のため、"
+                "常時・レベル1地震時に適用するかは技術者の判断による"
+                "(レベル1地震動に対する液状化判定は未実装)"
+            ),
+        )
+        motion_for_de = st.selectbox(
+            "低減に用いる地震動タイプ", [m.value for m in GroundMotionType],
+            index=1, key=f"demotion_{nonce}", disabled=not use_reduction,
+        )
+        if assessment is None:
+            st.caption(
+                "液状化判定を実行していないため、土質定数の低減は反映されない。"
+            )
+        reduction = (
+            SoilReduction.from_assessment(
+                assessment, GroundMotionType(motion_for_de)
+            )
+            if use_reduction and assessment is not None
+            else None
+        )
+
         if profile is None:
             st.error(f"地層データにエラーがあります: {profile_error}")
         elif st.button("安定計算を実行", type="primary"):
@@ -1041,6 +1070,7 @@ def main() -> None:
                     material=material_spec,
                     check_negative_friction=use_nf,
                     e0_method=E0Method(e0_method),
+                    reduction=reduction,
                 )
             except (ValueError, NotImplementedError, RuntimeError) as exc:
                 st.error(f"計算エラー: {exc}")
@@ -1132,6 +1162,7 @@ def main() -> None:
                     allowable_ductility=l2_mua if l2_mua > 0 else None,
                     allowable_displacement=l2_da if l2_da > 0 else None,
                     e0_method=E0Method(e0_method),
+                    reduction=reduction,
                     bnwf_elements=int(bnwf_elements),
                 )
             except (ValueError, NotImplementedError, RuntimeError) as exc:

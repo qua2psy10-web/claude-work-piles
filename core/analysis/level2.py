@@ -55,6 +55,7 @@ from core.capacity.springs import (
 from core.models.loads import LoadCase
 from core.models.pile import Footing, PileArrangement, PileSpec, PileType
 from core.models.soil import SoilProfile
+from core.soil.liquefaction import SoilReduction
 from core.standards import (
     ALLOWABLE_DUCTILITY_CIP_HIGH_GRADE,
     ALLOWABLE_DUCTILITY_PILE,
@@ -90,7 +91,9 @@ LIMITATIONS: tuple[str, ...] = (
     "いずれの杭種でも、塑性ヒンジ後の曲げ剛性低下は追跡していない。",
     "押込み支持力の上限値 Pu・引抜き抵抗力の上限値 Pt は、許容応力度設計法の"
     "式で安全率を 1 とした値として算定している(道示Ⅴ の規定との照合が未了)。",
-    "液状化に伴う地盤定数の低減、群杭効果、側方流動は考慮していない。",
+    "群杭効果(支持力のブロック破壊)と側方流動は考慮していない。"
+    "液状化に伴う土質定数の低減 DE は、液状化判定の結果を渡した場合にのみ"
+    "考慮する。",
     "水平方向地盤反力係数 kH はレベル1地震時の値(α = 2)を用いている。"
     "レベル2用の地盤反力係数の規定は未照合。",
 )
@@ -720,12 +723,17 @@ def build_bnwf_model(
     profile: SoilProfile,
     section: PileSection,
     springs: LateralSprings,
+    reduction: SoilReduction | None = None,
     n_elements: int = 50,
 ) -> BnwfLateralModel:
     """杭・地盤の諸元から BNWF モデルを組み立てる。
 
     節点ごとの pHU を :func:`core.capacity.lateral_limit.p_hu` で求める。
     杭先端が地盤モデルの下端より深い場合は、最下層の値を延長して用いる。
+
+    ``reduction`` を与えると、液状化の低減係数 DE を**節点ごとに**バネ定数と
+    上限値に乗じる。杭頭バネ K1〜K4 による弾性解析では深度平均に頼るしか
+    ないが、分布バネモデルでは層ごとに扱えるためこちらのほうが原典に忠実。
     """
     depths = np.linspace(0.0, pile.length, n_elements + 1) + footing.embedment
     xs = np.array(pile_x_coordinates(arrangement), dtype=float)
@@ -745,6 +753,12 @@ def build_bnwf_model(
             ]
         )
 
+    de = (
+        np.array([reduction.factor_at(float(d)) for d in depths])
+        if reduction is not None
+        else None
+    )
+
     def make(front_row: bool) -> PileLateralModel:
         return PileLateralModel(
             ei=section.ei,
@@ -752,6 +766,7 @@ def build_bnwf_model(
             length=pile.length,
             kh=springs.kh,
             limits=limits(front_row),
+            reduction=de,
             n_elements=n_elements,
         )
 
@@ -942,6 +957,7 @@ def run_level2(
     allowable_displacement: float | None = None,
     allowable_rotation: float | None = ALLOWABLE_FOOTING_ROTATION,
     e0_method: E0Method = E0Method.N_VALUE,
+    reduction: SoilReduction | None = None,
     use_bnwf: bool = True,
     bnwf_elements: int = 100,
     max_factor: float = 3.0,
@@ -969,12 +985,30 @@ def run_level2(
     bearing = compute_bearing_capacity(pile, profile, footing.embedment)
     kv = axial_spring(pile, section)
     axial = AxialSpringModel.from_bearing(kv, bearing)
+    has_k_ep = all(layer.k_ep is not None for layer in profile.layers)
+    use_bnwf_actual = use_bnwf and has_k_ep
+    # 分布バネモデルでは DE を**節点ごとに**乗じるので、ここでは低減前の
+    # kH を求める。弾性解析に落ちる場合のみ、平均した DE を kH に織り込む。
     springs = lateral_springs(
         pile, section, profile, footing.embedment, LoadCase.LEVEL1_EQ,
         e0_method=e0_method,
+        reduction=None if use_bnwf_actual else reduction,
     )
 
     extra_notes: list[str] = []
+    if reduction is not None and reduction.has_reduction:
+        span = reduction.reduced_depth_range()
+        detail = (
+            "分布バネモデルでは節点ごとに乗じている"
+            if use_bnwf and all(layer.k_ep is not None for layer in profile.layers)
+            else "杭頭バネを用いる弾性解析のため、kH の平均区間で層厚加重平均"
+            "した値を乗じている"
+        )
+        extra_notes.append(
+            f"液状化による土質定数の低減 DE を考慮している"
+            f"(低減区間: 深さ {span[0]:.1f}〜{span[1]:.1f} m、"
+            f"{reduction.motion_type.value})。{detail}。"
+        )
     if allowable_ductility is None:
         allowable_ductility = allowable_ductility_for(
             structure_type, pile, rebar_grade
@@ -1017,18 +1051,17 @@ def run_level2(
             "(軸方向支持力の上限到達のみで判定)。"
         )
 
-    has_k_ep = all(layer.k_ep is not None for layer in profile.layers)
     soil_reaction, soil_notes = _soil_reaction_diagnosis(
         pile, arrangement, footing, profile, section, springs, v_load, h_load, m_load,
-        kv, axial, bnwf=use_bnwf and has_k_ep,
+        kv, axial, bnwf=use_bnwf_actual,
     )
     extra_notes.extend(soil_notes)
 
     lateral: LateralModel | None = None
-    if use_bnwf and soil_reaction is not None:
+    if use_bnwf_actual and soil_reaction is not None:
         lateral = build_bnwf_model(
             pile, arrangement, footing, profile, section, springs,
-            n_elements=bnwf_elements,
+            reduction=reduction, n_elements=bnwf_elements,
         )
         extra_notes.append(
             f"水平方向は分布バネモデル(BNWF、{bnwf_elements} 分割)で解析し、"

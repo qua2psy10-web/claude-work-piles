@@ -15,11 +15,15 @@ kH と β は相互に依存するため収束計算による。
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 from dataclasses import dataclass
 
 from core.models.loads import LoadCase
 from core.models.pile import PileSpec
 from core.models.soil import SoilProfile
+
+if TYPE_CHECKING:  # 循環インポートを避ける
+    from core.soil.liquefaction import SoilReduction
 from core.standards import (
     ALPHA_KH,
     E0_FROM_N,
@@ -56,6 +60,7 @@ class LateralSprings:
     k4: float  # (kN·m/rad)
     iterations: int
     beta_le: float  # βLe(半無限長の判定に用いる)
+    de: float = 1.0  # kH に乗じた液状化の低減係数(1.0 = 低減なし)
 
     @property
     def is_semi_infinite(self) -> bool:
@@ -72,6 +77,15 @@ def axial_spring(pile: PileSpec, section: PileSection) -> float:
             "が工法の適用範囲外の可能性があります"
         )
     return a * section.area * section.young / pile.length
+
+
+def _de_factor(
+    reduction: "SoilReduction | None", embedment: float, depth_range: float
+) -> float:
+    """kH に乗じる低減係数。``reduction`` が無ければ 1.0。"""
+    if reduction is None:
+        return 1.0
+    return reduction.mean_factor(embedment, embedment + depth_range)
 
 
 def mean_e0(
@@ -104,6 +118,7 @@ def lateral_springs(
     embedment: float,
     case: LoadCase,
     e0_method: E0Method = E0Method.N_VALUE,
+    reduction: "SoilReduction | None" = None,
     max_iter: int = 100,
     tol: float = 1e-8,
 ) -> LateralSprings:
@@ -113,6 +128,11 @@ def lateral_springs(
 
     ``e0_method`` は変形係数 E0 の推定方法。α の値がこれにより決まる
     (N値・平板載荷は常時1/地震時2、孔内水平載荷・室内試験は 4/8)。
+
+    ``reduction`` を与えると、液状化に伴う土質定数の低減係数 DE を kH に
+    乗じる(道示Ⅴ 8.2.4)。DE は E0 と同じ区間(杭頭直下 1/β)で層厚加重
+    平均する。**低減は収束計算の内側で行う**ため、kH の低下が β の低下、
+    ひいては地中部最大曲げモーメント位置の深部移動として現れる。
     """
     alpha_normal, alpha_seismic = ALPHA_KH[e0_method]
     alpha = alpha_seismic if case == LoadCase.LEVEL1_EQ else alpha_normal
@@ -129,7 +149,16 @@ def lateral_springs(
         e0 = mean_e0(profile, embedment, depth_range)
         kh0 = alpha * e0 / 0.3
         bh = math.sqrt(d / beta)
-        kh = kh0 * (bh / 0.3) ** (-0.75)
+        de = _de_factor(reduction, embedment, depth_range)
+        if de <= 0.0:
+            raise ValueError(
+                f"杭頭直下 {depth_range:.2f} m の区間が全て液状化と判定され"
+                "(DE = 0)、水平地盤反力係数 kH が 0 になりました。"
+                "杭頭バネ K1〜K4 は弾性床上の梁(Chang の式)を前提とするため、"
+                "この状態では適用できません。分布バネモデル(BNWF)であれば"
+                "節点ごとに扱えるため、レベル2の照査を用いてください"
+            )
+        kh = kh0 * (bh / 0.3) ** (-0.75) * de
         beta_new = (kh * d / (4.0 * ei)) ** 0.25
         if abs(beta_new - beta) < tol * max(1.0, beta):
             beta = beta_new
@@ -142,7 +171,8 @@ def lateral_springs(
     depth_range = min(1.0 / beta, profile.total_depth - embedment)
     e0 = mean_e0(profile, embedment, depth_range)
     bh = math.sqrt(d / beta)
-    kh = (alpha * e0 / 0.3) * (bh / 0.3) ** (-0.75)
+    de = _de_factor(reduction, embedment, depth_range)
+    kh = (alpha * e0 / 0.3) * (bh / 0.3) ** (-0.75) * de
 
     k1 = 4.0 * ei * beta**3
     k2 = -2.0 * ei * beta**2
@@ -159,4 +189,5 @@ def lateral_springs(
         k4=k4,
         iterations=iterations,
         beta_le=beta * pile.length,
+        de=de,
     )

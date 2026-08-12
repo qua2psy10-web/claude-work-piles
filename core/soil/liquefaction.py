@@ -274,3 +274,93 @@ def assess_liquefaction(
     return LiquefactionAssessment(
         slices=slices, liquefiable_type1=liq1, liquefiable_type2=liq2
     )
+
+
+# ---------------------------------------------------------------------------
+# 土質定数の低減(道示Ⅴ(H24) 8.2.4)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SoilReduction:
+    """深度ごとの土質定数の低減係数 DE。
+
+    液状化が生じると判定された土層では、**側方地盤のバネ定数 kH に DE を
+    乗じる**(提供解説資料により確認済み。docs/VERIFICATION.md 第7回)。
+
+    .. important::
+       DE は**レベル2地震動に対する液状化判定**から得られる。本ソフトは
+       レベル1地震動に対する液状化判定(khg0 が異なる)を実装していないため、
+       常時・レベル1地震時の照査にこの DE を用いるかは利用者の判断とする
+       (用いる場合は安全側の代用となる)。
+
+    .. note::
+       周面摩擦力度・受働土圧強度への低減は、提供資料で確認できていない
+       ため適用していない。適用が必要な場合は原典を確認すること。
+    """
+
+    # (上端深度, 下端深度, DE) の並び。深度は地表面から。
+    segments: tuple[tuple[float, float, float], ...]
+    motion_type: GroundMotionType
+
+    @classmethod
+    def from_assessment(
+        cls, assessment: LiquefactionAssessment, motion_type: GroundMotionType
+    ) -> "SoilReduction":
+        """液状化判定の結果から低減係数を取り出す。"""
+        segments = tuple(
+            (
+                s.depth_top,
+                s.depth_bottom,
+                s.de_type1
+                if motion_type == GroundMotionType.LEVEL2_TYPE1
+                else s.de_type2,
+            )
+            for s in assessment.slices
+        )
+        return cls(segments=segments, motion_type=motion_type)
+
+    @property
+    def has_reduction(self) -> bool:
+        """低減される区間があるか。"""
+        return any(de < 1.0 for _, _, de in self.segments)
+
+    def factor_at(self, depth: float) -> float:
+        """深度 ``depth`` における DE。範囲外は 1.0(低減なし)。"""
+        for top, bottom, de in self.segments:
+            if top <= depth <= bottom:
+                return de
+        return 1.0
+
+    def mean_factor(self, top: float, bottom: float) -> float:
+        """区間 [top, bottom] における DE の層厚加重平均。
+
+        本ソフトの kH は杭頭直下の一定区間を平均した1つの値なので、DE も
+        同じ区間で平均して乗じる。
+
+        .. warning::
+           層ごとに kH を変える(分布バネモデル)ほうが原典に忠実である。
+           この平均化は、杭頭バネ K1〜K4 を用いる弾性解析での近似である。
+        """
+        if bottom <= top:
+            return self.factor_at(top)
+        total = 0.0
+        weighted = 0.0
+        for seg_top, seg_bottom, de in self.segments:
+            overlap = min(seg_bottom, bottom) - max(seg_top, top)
+            if overlap <= 0:
+                continue
+            weighted += de * overlap
+            total += overlap
+        if total <= 0:
+            return 1.0
+        # 判定範囲(通常は地表面から 20 m)より深い区間は低減しない
+        uncovered = (bottom - top) - total
+        return (weighted + uncovered) / (bottom - top)
+
+    def reduced_depth_range(self) -> tuple[float, float] | None:
+        """低減される区間の深度範囲。無ければ None。"""
+        reduced = [(t, b) for t, b, de in self.segments if de < 1.0]
+        if not reduced:
+            return None
+        return (min(t for t, _ in reduced), max(b for _, b in reduced))

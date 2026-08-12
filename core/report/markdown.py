@@ -263,6 +263,11 @@ def _case_section(case: CaseResult) -> str:
                 ["換算係数 α", f"{sp.alpha:g}"],
                 ["換算載荷幅 BH", f"{sp.bh:.3f} m"],
                 ["水平方向地盤反力係数 kH", f"{_num(sp.kh, 0)} kN/m³"],
+                *(
+                    [["液状化による低減係数 DE", f"{sp.de:.3f}"]]
+                    if sp.de < 1.0
+                    else []
+                ),
                 ["特性値 β", f"{sp.beta:.4f} 1/m"],
                 ["βL", f"{sp.beta_le:.2f}" + ("(半無限長)" if sp.is_semi_infinite else "(**適用範囲外**)")],
                 ["軸方向バネ Kv", f"{_num(case.kv, 0)} kN/m"],

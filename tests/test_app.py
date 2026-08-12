@@ -140,3 +140,36 @@ def test_level2_derives_allowable_ductility_and_checks_rotation():
     assert any("回転角" in c.name for c in result.checks)
     # 自動設定した旨が注記される
     assert any("μa = 4" in n for n in result.notes)
+
+
+def test_liquefaction_reduction_is_opt_in_and_needs_the_assessment():
+    """DE の反映はチェックボックスで明示的に選ぶ(既定では反映しない)。"""
+    at = run_app()
+    checkbox = next(
+        c for c in at.checkbox if "液状化による土質定数の低減" in c.label
+    )
+    assert checkbox.value is False
+    # 液状化判定を実行していないうちは選択できない
+    assert checkbox.disabled
+
+    # 判定を実行すると選択できるようになる
+    next(b for b in at.button if "液状化判定" in b.label).click().run()
+    at2 = at
+    checkbox = next(
+        c for c in at2.checkbox if "液状化による土質定数の低減" in c.label
+    )
+    assert not checkbox.disabled
+
+
+def test_stability_reflects_the_reduction_when_enabled():
+    at = run_app()
+    next(b for b in at.button if "液状化判定" in b.label).click().run()
+    next(
+        c for c in at.checkbox if "液状化による土質定数の低減" in c.label
+    ).set_value(True).run()
+    next(b for b in at.button if "安定計算を実行" in b.label).click().run()
+    assert not at.exception
+
+    report = at.session_state["report"]
+    assert any("液状化による土質定数の低減" in n for n in report.notes)
+    assert report.cases[0].springs.de < 1.0

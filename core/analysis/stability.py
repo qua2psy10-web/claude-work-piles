@@ -15,6 +15,7 @@ from core.capacity.springs import LateralSprings, PileSection, axial_spring, lat
 from core.models.loads import FootingLoads, LoadCase
 from core.models.pile import Footing, PileArrangement, PileSpec, PileType
 from core.models.soil import SoilProfile
+from core.soil.liquefaction import SoilReduction
 from core.section.checks import MaterialSpec, PileStressResult, check_section
 from core.section.pile_head import PileHeadResult, check_pile_head
 from core.standards import (
@@ -105,6 +106,7 @@ def analyze(
     material: MaterialSpec | None = None,
     check_negative_friction: bool = False,
     e0_method: E0Method = E0Method.N_VALUE,
+    reduction: SoilReduction | None = None,
 ) -> StabilityReport:
     """全荷重ケースについて安定計算・断面照査・杭頭結合部の照査を行う。
 
@@ -116,6 +118,10 @@ def analyze(
         負の周面摩擦力(NF)を検討するか。常時の杭頭最大軸力を死荷重とみなす。
     e0_method:
         変形係数 E0 の推定方法。kH の換算係数 α がこれにより決まる。
+    reduction:
+        液状化に伴う土質定数の低減係数 DE(道示Ⅴ 8.2.4)。与えると kH に
+        乗じる。DE はレベル2地震動に対する液状化判定から得られるため、
+        常時・レベル1地震時に適用するかは利用者の判断となる(注記を出す)。
     """
     section = pile_section(pile, fck=fck)
     bearing = compute_bearing_capacity(pile, profile, footing.embedment)
@@ -130,10 +136,21 @@ def analyze(
             "(断面力・変位に影響する)。許容応力度は既製コンクリート杭として"
             "規定された値を用いており、σck の入力値には依存しない。"
         )
+    if reduction is not None and reduction.has_reduction:
+        span = reduction.reduced_depth_range()
+        notes.append(
+            f"液状化による土質定数の低減を kH に反映している"
+            f"(低減区間: 深さ {span[0]:.1f}〜{span[1]:.1f} m、"
+            f"{reduction.motion_type.value})。DE はレベル2地震動に対する"
+            "液状化判定から得た値であり、常時・レベル1地震時の照査に用いる"
+            "ことの適否は利用者が判断すること"
+            "(レベル1地震動に対する液状化判定は未実装)。"
+        )
     cases: list[CaseResult] = []
     for load in loads:
         springs = lateral_springs(
-            pile, section, profile, footing.embedment, load.case, e0_method=e0_method
+            pile, section, profile, footing.embedment, load.case,
+            e0_method=e0_method, reduction=reduction,
         )
         result = solve_stability(
             arrangement,

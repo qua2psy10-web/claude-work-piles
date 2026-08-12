@@ -1,0 +1,268 @@
+"""液状化に伴う土質定数の低減 DE の反映(道示Ⅴ(H24) 8.2.4)のテスト。"""
+import pytest
+
+from core.analysis.stability import analyze
+from core.capacity.section import pile_section
+from core.capacity.springs import lateral_springs
+from core.models import (
+    ConstructionMethod,
+    Footing,
+    FootingLoads,
+    LoadCase,
+    PileArrangement,
+    PileSpec,
+    PileType,
+    SoilLayer,
+    SoilProfile,
+    SoilType,
+)
+from core.soil.liquefaction import SoilReduction, assess_liquefaction
+from core.standards import GroundMotionType, GroundType
+
+MOTION = GroundMotionType.LEVEL2_TYPE2
+
+
+def liquefiable_profile(n_value: float = 10.0, fc: float = 25.0):
+    """浅部に液状化する砂層をもつ地盤。
+
+    既定(N = 10、FC = 25%)では DE = 2/3 となり部分的に低減される。
+    N を下げると DE = 0(完全液状化)になる。
+    """
+    return SoilProfile(
+        layers=[
+            SoilLayer(
+                name="As1", soil_type=SoilType.SAND, thickness=10.0,
+                n_value=n_value,
+                gamma_t=18.0, gamma_sat=19.0, fc=fc, d50=0.3, d10=0.08,
+            ),
+            SoilLayer(
+                name="Ds", soil_type=SoilType.SAND, thickness=20.0, n_value=45.0,
+                gamma_t=19.0, gamma_sat=20.0, fc=8.0, d50=0.5, d10=0.1,
+                is_alluvial=False,
+            ),
+        ],
+        gwl=1.0,
+    )
+
+
+PILE = PileSpec(
+    pile_type=PileType.CAST_IN_PLACE,
+    method=ConstructionMethod.CAST_IN_PLACE,
+    diameter=1.0,
+    length=20.0,
+)
+ARRANGEMENT = PileArrangement(nx=3, ny=3, spacing_x=2.5, spacing_y=2.5)
+FOOTING = Footing(width_x=8.0, width_y=8.0, height=1.5, embedment=2.0)
+
+
+def sample_reduction(**kwargs):
+    assessment = assess_liquefaction(
+        liquefiable_profile(**kwargs), GroundType.TYPE_II,
+        cz_type1=1.0, cz_type2=1.0,
+    )
+    return SoilReduction.from_assessment(assessment, MOTION)
+
+
+def fully_liquefied_reduction():
+    """杭頭直下が完全液状化(DE = 0)する条件。"""
+    return sample_reduction(n_value=6.0, fc=5.0)
+
+
+# --- SoilReduction ----------------------------------------------------------
+
+
+def test_reduction_is_derived_from_the_assessment():
+    reduction = sample_reduction()
+    assert reduction.motion_type == MOTION
+    assert reduction.has_reduction
+    span = reduction.reduced_depth_range()
+    assert span is not None
+    # 緩い砂層(0〜10 m、地下水位 1 m 以深)が低減される
+    assert span[0] < 10.0
+
+
+def test_factor_at_returns_one_outside_the_judged_range():
+    reduction = sample_reduction()
+    # 判定対象は地表面から 20 m まで
+    assert reduction.factor_at(25.0) == 1.0
+    assert 0.0 <= reduction.factor_at(5.0) <= 1.0
+
+
+def test_mean_factor_is_thickness_weighted():
+    reduction = SoilReduction(
+        segments=((0.0, 2.0, 1.0), (2.0, 8.0, 1.0 / 3.0), (8.0, 20.0, 2.0 / 3.0)),
+        motion_type=MOTION,
+    )
+    assert reduction.mean_factor(2.0, 8.0) == pytest.approx(1.0 / 3.0)
+    expected = (2 * 1.0 + 6 * (1 / 3) + 2 * (2 / 3)) / 10
+    assert reduction.mean_factor(0.0, 10.0) == pytest.approx(expected)
+
+
+def test_mean_factor_does_not_reduce_beyond_the_judged_depth():
+    """判定範囲(20 m)より深い区間は低減しない。"""
+    reduction = SoilReduction(
+        segments=((0.0, 20.0, 0.5),), motion_type=MOTION
+    )
+    # 0〜40 m のうち低減されるのは前半だけ
+    assert reduction.mean_factor(0.0, 40.0) == pytest.approx((20 * 0.5 + 20 * 1.0) / 40)
+
+
+def test_no_reduction_when_nothing_liquefies():
+    dense = SoilProfile(
+        layers=[
+            SoilLayer(
+                name="Ds", soil_type=SoilType.SAND, thickness=30.0, n_value=45.0,
+                gamma_t=19.0, gamma_sat=20.0, fc=8.0, d50=0.5, d10=0.1,
+                is_alluvial=False,
+            )
+        ],
+        gwl=1.0,
+    )
+    assessment = assess_liquefaction(dense, GroundType.TYPE_II)
+    reduction = SoilReduction.from_assessment(assessment, MOTION)
+    assert not reduction.has_reduction
+    assert reduction.reduced_depth_range() is None
+    assert reduction.mean_factor(0.0, 20.0) == pytest.approx(1.0)
+
+
+# --- kH への反映 ------------------------------------------------------------
+
+
+def springs_with(reduction, profile=None):
+    profile = profile if profile is not None else liquefiable_profile()
+    section = pile_section(PILE)
+    return lateral_springs(
+        PILE, section, profile, FOOTING.embedment, LoadCase.LEVEL1_EQ,
+        reduction=reduction,
+    )
+
+
+def test_reduction_lowers_kh_and_beta():
+    plain = springs_with(None)
+    reduced = springs_with(sample_reduction())
+
+    assert reduced.de < 1.0
+    assert reduced.kh < plain.kh
+    # kH が下がれば β も下がる(特性長が伸びる)
+    assert reduced.beta < plain.beta
+    # 杭頭バネもすべて小さくなる
+    assert reduced.k1 < plain.k1
+    assert abs(reduced.k2) < abs(plain.k2)
+    assert reduced.k4 < plain.k4
+
+
+def test_de_is_recorded_on_the_result():
+    plain = springs_with(None)
+    assert plain.de == 1.0
+    assert 0.0 <= springs_with(sample_reduction()).de < 1.0
+
+
+def test_reduction_is_applied_inside_the_convergence_loop():
+    """DE を後から掛けるのではなく収束計算の内側で効かせていること。
+
+    後から kH に掛けるだけなら β は変わらない。β が変わることで、
+    地中部最大曲げモーメントの位置が深部へ移動する。
+    """
+    from core.analysis.section_forces import distribution
+
+    section = pile_section(PILE)
+    plain = springs_with(None)
+    reduced = springs_with(sample_reduction())
+
+    # 単純に DE を後掛けした場合の β(変化しない)と比較する
+    assert reduced.beta < plain.beta
+
+    peak_plain = distribution(
+        ei=section.ei, beta=plain.beta, h0=200.0, m0=-300.0, length=PILE.length
+    ).max_underground_moment
+    peak_reduced = distribution(
+        ei=section.ei, beta=reduced.beta, h0=200.0, m0=-300.0, length=PILE.length
+    ).max_underground_moment
+    assert peak_reduced.depth > peak_plain.depth
+
+
+# --- 安定計算への反映 -------------------------------------------------------
+
+
+def stability(reduction, profile=None):
+    loads = [FootingLoads(case=LoadCase.LEVEL1_EQ, v=9000.0, h=2000.0, m=8000.0)]
+    return analyze(
+        PILE, ARRANGEMENT, FOOTING,
+        profile if profile is not None else liquefiable_profile(), loads,
+        reduction=reduction,
+    )
+
+
+def test_full_liquefaction_below_the_footing_is_rejected_with_guidance():
+    """杭頭直下が全て DE = 0 なら Chang の式は適用できず、理由を示すこと。"""
+    with pytest.raises(ValueError, match="分布バネモデル"):
+        springs_with(fully_liquefied_reduction())
+
+
+def test_liquefaction_increases_displacement_and_head_moment():
+    """低減を反映すると水平変位と杭頭モーメントが増える(従来は過小評価)。
+
+    杭頭水平力は釣合いから決まり(全杭が同一なので H / 本数)、バネの
+    大小によらない。増えるのは変位と杭頭モーメントである。
+    """
+    plain = stability(None).cases[0]
+    reduced = stability(sample_reduction()).cases[0]
+
+    assert reduced.result.u > plain.result.u
+    assert abs(reduced.critical_pile.moment) > abs(plain.critical_pile.moment)
+
+
+def test_liquefaction_moves_the_maximum_moment_deeper():
+    """地盤反力の低下により地中部最大曲げモーメントの位置が深部へ移る。
+
+    VERIFICATION.md 第7回に記録した挙動(提供資料の指摘)を再現する。
+    """
+    plain = stability(None).cases[0]
+    reduced = stability(sample_reduction()).cases[0]
+
+    assert reduced.springs.beta < plain.springs.beta
+    assert (
+        reduced.forces.max_underground_moment.depth
+        > plain.forces.max_underground_moment.depth
+    )
+
+
+def test_stability_records_a_note_about_the_reduction():
+    report = stability(sample_reduction())
+    assert any("液状化による土質定数の低減" in n for n in report.notes)
+    # レベル1に適用することの適否は利用者判断である旨を明示する
+    assert any("利用者が判断" in n for n in report.notes)
+
+
+def test_no_note_without_reduction():
+    assert not any(
+        "液状化" in n for n in stability(None).notes
+    )
+
+
+# --- レベル2への反映 --------------------------------------------------------
+
+
+def test_level2_applies_reduction_per_node_with_bnwf():
+    from core.analysis.level2 import run_level2
+
+    # 杭頭直下が完全液状化する条件。分布バネモデルなら節点ごとに扱えるため
+    # 解けるが、杭頭バネ K1〜K4 では解けない(上のテスト)。
+    profile = liquefiable_profile(n_value=6.0, fc=5.0)
+    with_kep = SoilProfile(
+        layers=[layer.model_copy(update={"k_ep": 3.0}) for layer in profile.layers],
+        gwl=profile.gwl,
+    )
+    assessment = assess_liquefaction(with_kep, GroundType.TYPE_II)
+    reduction = SoilReduction.from_assessment(assessment, MOTION)
+
+    kwargs = dict(
+        v_load=9000.0, h_load=3000.0, m_load=12000.0, max_factor=1.0, steps=10,
+    )
+    plain = run_level2(PILE, ARRANGEMENT, FOOTING, with_kep, **kwargs)
+    reduced = run_level2(
+        PILE, ARRANGEMENT, FOOTING, with_kep, reduction=reduction, **kwargs
+    )
+
+    assert reduced.response.u > plain.response.u
+    assert any("節点ごとに乗じている" in n for n in reduced.notes)

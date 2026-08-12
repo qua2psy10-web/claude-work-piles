@@ -115,6 +115,17 @@ class PileLateralModel:
     limits:
         節点ごとの地盤反力度の上限値 pHU (kN/m²)。``None`` なら弾性
         (上限なし)として扱う。要素数 + 1 個必要。
+    reduction:
+        節点ごとの土質定数の低減係数 DE(液状化。道示Ⅴ 8.2.4)。
+        バネ定数 **および上限値** に乗じる。``None`` なら低減なし。
+
+        .. note::
+           提供資料で確認できているのは「側方地盤のバネ定数 kH に DE を
+           乗じる」ことまでである。上限値 pHU にも乗じているのは、
+           (a) 液状化した層は受働抵抗も失われると考えるのが自然であり、
+           (b) 乗じないとバネの降伏変位 R/k が液状化層でかえって大きく
+           なって挙動が不整合になり、(c) 抵抗を小さくする安全側の扱い
+           だからである。**原典で要確認**。
     n_elements:
         分割数。
     """
@@ -126,6 +137,7 @@ class PileLateralModel:
         length: float,
         kh: float,
         limits: np.ndarray | None = None,
+        reduction: np.ndarray | None = None,
         n_elements: int = 50,
     ) -> None:
         if n_elements < 2:
@@ -140,7 +152,20 @@ class PileLateralModel:
         self.node_depths = np.linspace(0.0, length, n_elements + 1)
 
         tributary = tributary_lengths(length, n_elements)
-        self.spring_k = kh * diameter * tributary  # kN/m
+        if reduction is None:
+            self.reduction = np.ones(n_elements + 1)
+        else:
+            self.reduction = np.asarray(reduction, dtype=float)
+            if self.reduction.shape != (n_elements + 1,):
+                raise ValueError(
+                    f"低減係数の要素数が分割数と一致しません "
+                    f"({self.reduction.shape[0]} ≠ {n_elements + 1})"
+                )
+            if np.any(self.reduction < 0.0) or np.any(self.reduction > 1.0):
+                raise ValueError("低減係数 DE は 0〜1 の範囲である必要があります")
+        # 低減は**節点ごと**に行う。杭頭バネ K1〜K4 を用いる弾性解析では
+        # 深度平均に頼らざるを得ないが、分布バネモデルでは層ごとに扱える。
+        self.spring_k = kh * diameter * tributary * self.reduction  # kN/m
         if limits is None:
             self.spring_limit = np.full(n_elements + 1, np.inf)
         else:
@@ -152,7 +177,7 @@ class PileLateralModel:
                 )
             if np.any(limits <= 0):
                 raise ValueError("地盤反力度の上限値は正の値である必要があります")
-            self.spring_limit = limits * diameter * tributary  # kN
+            self.spring_limit = limits * diameter * tributary * self.reduction  # kN
 
         self.beam = _beam_stiffness(ei, length / n_elements, n_elements)
         self._state = np.zeros(2 * (n_elements + 1))
