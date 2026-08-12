@@ -207,56 +207,82 @@ def _sheet_bearing(ws: Worksheet, report: StabilityReport) -> None:
             ["先端面積 Ap", round(bc.tip_area, 4), "m²"],
             ["先端支持力 qd·Ap", round(bc.tip_resistance, 1), "kN"],
             ["周面摩擦力 U·ΣLf", round(bc.skin_resistance, 1), "kN"],
-            *(
-                [
-                    [
-                        "(液状化による低減前)",
-                        round(bc.skin_resistance_unreduced, 1),
-                        "kN",
-                    ]
-                ]
-                if bc.has_reduced_skin
-                else []
-            ),
             ["周面摩擦の計上下端", round(bc.skin_bottom_depth, 2), "m"],
             ["極限支持力 Ru", round(bc.ru, 1), "kN"],
             ["杭の有効重量 W", round(bc.w_pile, 1), "kN"],
             ["置換土の有効重量 Ws", round(bc.w_soil, 1), "kN"],
         ],
     )
-    row = _write_table(
-        ws,
-        row,
-        ["層名", "土質", "長さ(m)", "f (kN/m²)", "DE", "f·DE (kN/m²)", "U·L·f (kN)"],
-        [
+    row = _write_table(ws, row, *_skin_rows(bc))
+
+    seismic = report.bearing_seismic
+    if seismic is not None:
+        row = _write_title(
+            ws, row + 1, "液状化を考慮する地震時(f′i = DE,i × fi。常時・暴風時には適用しない)"
+        )
+        row = _write_table(ws, row, *_skin_rows(seismic))
+        row = _write_table(
+            ws,
+            row,
+            ["項目", "値", "単位"],
             [
-                s.layer_name,
-                s.soil_type.value,
-                round(s.length, 2),
-                round(s.f, 1),
-                round(s.de, 2),
-                round(s.f_design, 1),
-                round(s.force, 1),
-            ]
-            for s in bc.skin_segments
-        ],
-    )
+                ["周面摩擦力 U·ΣLf′", round(seismic.skin_resistance, 1), "kN"],
+                [
+                    "(低減前)",
+                    round(seismic.skin_resistance_unreduced, 1),
+                    "kN",
+                ],
+                ["極限支持力 Ru(地震時)", round(seismic.ru, 1), "kN"],
+                ["先端付近の DE", round(seismic.tip_de, 2), "—"],
+            ],
+        )
     _write_table(
         ws,
         row,
-        ["荷重ケース", "n(押込み)", "Ra (kN)", "n(引抜き)", "Pa (kN)"],
+        ["荷重ケース", "Ru (kN)", "n(押込み)", "Ra (kN)", "n(引抜き)", "Pa (kN)"],
         [
             [
                 case.loads.case.value,
-                bc.safety_factor_push(case.loads.case),
-                round(bc.allowable_push(case.loads.case), 1),
-                bc.safety_factor_pull(case.loads.case),
-                round(bc.allowable_pull(case.loads.case), 1),
+                round(report.bearing_for(case.loads.case).ru, 1),
+                report.bearing_for(case.loads.case).safety_factor_push(
+                    case.loads.case
+                ),
+                round(
+                    report.bearing_for(case.loads.case).allowable_push(
+                        case.loads.case
+                    ),
+                    1,
+                ),
+                report.bearing_for(case.loads.case).safety_factor_pull(
+                    case.loads.case
+                ),
+                round(
+                    report.bearing_for(case.loads.case).allowable_pull(
+                        case.loads.case
+                    ),
+                    1,
+                ),
             ]
             for case in report.cases
         ],
     )
     _autosize(ws)
+
+
+def _skin_rows(bc) -> tuple[list[str], list[list]]:
+    """周面摩擦力の内訳表。低減がある場合のみ DE の列を出す。"""
+    reduced = bc.has_reduced_skin
+    header = ["層名", "土質", "長さ(m)", "f (kN/m²)"]
+    if reduced:
+        header += ["DE", "f′ = f·DE (kN/m²)"]
+    header += ["U·L·f (kN)"]
+    rows = [
+        [s.layer_name, s.soil_type.value, round(s.length, 2), round(s.f, 1)]
+        + ([round(s.de, 2), round(s.f_design, 1)] if reduced else [])
+        + [round(s.force, 1)]
+        for s in bc.skin_segments
+    ]
+    return header, rows
 
 
 def _sheet_case(ws: Worksheet, report: StabilityReport, case) -> None:

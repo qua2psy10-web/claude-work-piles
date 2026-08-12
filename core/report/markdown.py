@@ -205,48 +205,39 @@ def _bearing_section(report: StabilityReport) -> str:
             f"- 周面摩擦は杭先端から 1D 手前(深さ "
             f"{bc.skin_bottom_depth:.2f} m)までを計上(道示Ⅳ 12.4.1)\n"
         )
-    # 液状化による低減がある場合のみ DE・低減後 f の列を出す
-    reduced = bc.has_reduced_skin
-    header = ["層名", "土質", "長さ(m)", "f (kN/m²)"]
-    if reduced:
-        header += ["DE", "f·DE (kN/m²)"]
-    header += ["U·L·f (kN)"]
+    s.append(_skin_table(bc))
     s.append(
-        "\n"
-        + _table(
-            header,
-            [
-                [
-                    seg.layer_name,
-                    seg.soil_type.value,
-                    _num(seg.length, 2),
-                    _num(seg.f, 1),
-                ]
-                + (
-                    [_num(seg.de, 2), _num(seg.f_design, 1)] if reduced else []
-                )
-                + [_num(seg.force, 1)]
-                for seg in bc.skin_segments
-            ],
-        )
-    )
-    s.append(f"\n- 周面摩擦力 U・ΣLi・fi = {_num(bc.skin_resistance, 0)} kN\n")
-    if reduced:
-        lost = bc.skin_resistance_unreduced - bc.skin_resistance
-        s.append(
-            f"  - 液状化による低減前は {_num(bc.skin_resistance_unreduced, 0)} kN"
-            f"(**{_num(lost, 0)} kN の減少**)\n"
-        )
-    if bc.tip_zone_liquefies:
-        s.append(
-            f"- ⚠ 杭先端付近(先端±1D)が液状化すると判定されている"
-            f"(DE = {bc.tip_de:.2f})。**先端支持力度 qd は低減していない**\n"
-        )
-    s.append(
+        f"\n- 周面摩擦力 U・ΣLi・fi = {_num(bc.skin_resistance, 0)} kN\n"
         f"- **極限支持力 Ru = {_num(bc.ru, 0)} kN**\n"
         f"- 杭の有効重量 W = {_num(bc.w_pile, 0)} kN、"
         f"置換土の有効重量 Ws = {_num(bc.w_soil, 0)} kN\n"
     )
+
+    seismic = report.bearing_seismic
+    if seismic is not None:
+        lost = seismic.skin_resistance_unreduced - seismic.skin_resistance
+        s.append(
+            "\n### 液状化を考慮する地震時(道示Ⅴ 8.2)\n\n"
+            "液状化すると判定された層の最大周面摩擦力度に土質定数の低減係数を"
+            "乗じる: **f′i = DE,i × fi**。\n"
+            "先端支持力度 qd は低減しない。"
+            "**この低減は耐震設計上の扱いであり、常時・暴風時には適用しない。**\n"
+        )
+        s.append(_skin_table(seismic))
+        s.append(
+            f"\n- 周面摩擦力 U・ΣLi・f′i = {_num(seismic.skin_resistance, 0)} kN"
+            f"(低減前 {_num(seismic.skin_resistance_unreduced, 0)} kN、"
+            f"**{_num(lost, 0)} kN の減少**)\n"
+            f"- **極限支持力 Ru = {_num(seismic.ru, 0)} kN**"
+            f"(低減前 {_num(bc.ru, 0)} kN)\n"
+        )
+        if seismic.tip_zone_liquefies:
+            s.append(
+                f"- ⚠ 杭先端付近(先端±1D)が液状化すると判定されている"
+                f"(DE = {seismic.tip_de:.2f})。**先端支持力度 qd は低減して"
+                "いない**ため、支持層の設定を確認すること\n"
+            )
+
     s.append(
         f"\n支持形式: **{bc.support_type.value}**"
         "(押込みの安全率が支持形式により異なる)\n"
@@ -254,21 +245,49 @@ def _bearing_section(report: StabilityReport) -> str:
     s.append("\nRa =(1/n)(Ru − Ws)+ Ws − W、Pa =(1/n)・Ruf + W\n\n")
     rows = []
     for case in report.cases:
+        load_case = case.loads.case
+        cap = report.bearing_for(load_case)
         rows.append(
             [
-                case.loads.case.value,
-                _num(bc.safety_factor_push(case.loads.case), 1),
-                _num(bc.allowable_push(case.loads.case), 0),
-                _num(bc.safety_factor_pull(case.loads.case), 1),
-                _num(bc.allowable_pull(case.loads.case), 0),
+                load_case.value,
+                _num(cap.ru, 0),
+                _num(cap.safety_factor_push(load_case), 1),
+                _num(cap.allowable_push(load_case), 0),
+                _num(cap.safety_factor_pull(load_case), 1),
+                _num(cap.allowable_pull(load_case), 0),
             ]
         )
     s.append(
         _table(
-            ["荷重ケース", "n(押込み)", "Ra (kN)", "n(引抜き)", "Pa (kN)"], rows
+            ["荷重ケース", "Ru (kN)", "n(押込み)", "Ra (kN)",
+             "n(引抜き)", "Pa (kN)"],
+            rows,
         )
     )
     return "".join(s)
+
+
+def _skin_table(bc) -> str:
+    """周面摩擦力の内訳表。液状化による低減がある場合のみ DE の列を出す。"""
+    reduced = bc.has_reduced_skin
+    header = ["層名", "土質", "長さ(m)", "f (kN/m²)"]
+    if reduced:
+        header += ["DE", "f′ = f·DE (kN/m²)"]
+    header += ["U·L·f (kN)"]
+    return "\n" + _table(
+        header,
+        [
+            [
+                seg.layer_name,
+                seg.soil_type.value,
+                _num(seg.length, 2),
+                _num(seg.f, 1),
+            ]
+            + ([_num(seg.de, 2), _num(seg.f_design, 1)] if reduced else [])
+            + [_num(seg.force, 1)]
+            for seg in bc.skin_segments
+        ],
+    )
 
 
 def _case_section(case: CaseResult) -> str:

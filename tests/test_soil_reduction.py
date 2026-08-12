@@ -357,16 +357,56 @@ def test_stability_reports_the_bearing_reduction():
     plain = analyze(**kwargs)
     reduced = analyze(**kwargs, reduction=sample_reduction())
 
-    assert reduced.bearing.ru < plain.bearing.ru
-    assert reduced.bearing.allowable_push(LoadCase.LEVEL1_EQ) < plain.bearing.allowable_push(
-        LoadCase.LEVEL1_EQ
-    )
+    seismic = reduced.bearing_seismic
+    assert seismic is not None
+    assert seismic.ru < plain.bearing.ru
+    case = LoadCase.LEVEL1_EQ
+    assert seismic.allowable_push(case) < plain.bearing.allowable_push(case)
     # 引抜き抵抗は周面摩擦力のみなので、より強く効く
-    assert reduced.bearing.allowable_pull(LoadCase.LEVEL1_EQ) < plain.bearing.allowable_pull(
-        LoadCase.LEVEL1_EQ
-    )
+    push_ratio = seismic.allowable_push(case) / plain.bearing.allowable_push(case)
+    pull_ratio = seismic.allowable_pull(case) / plain.bearing.allowable_pull(case)
+    assert pull_ratio < push_ratio < 1.0
     assert any("周面摩擦力度の低減内訳" in n for n in reduced.notes)
-    assert any("原典未確認" in n for n in reduced.notes)
+
+
+def test_reduction_does_not_apply_to_permanent_or_storm_cases():
+    """DE は耐震設計上の扱い。常時・暴風時の照査には適用しないこと。"""
+    profile = liquefiable_profile()
+    loads = [
+        FootingLoads(case=LoadCase.PERMANENT, v=9000.0, h=500.0, m=1500.0),
+        FootingLoads(case=LoadCase.STORM, v=9000.0, h=1200.0, m=3000.0),
+        FootingLoads(case=LoadCase.LEVEL1_EQ, v=9000.0, h=1500.0, m=4000.0),
+    ]
+    kwargs = dict(pile=PILE, arrangement=ARRANGEMENT, footing=FOOTING,
+                  profile=profile, loads=loads)
+    plain = analyze(**kwargs)
+    reduced = analyze(**kwargs, reduction=sample_reduction())
+
+    # 常時用の支持力は低減されない
+    assert not reduced.bearing.has_reduced_skin
+    assert reduced.bearing.ru == pytest.approx(plain.bearing.ru)
+
+    by_case = {c.loads.case: c for c in reduced.cases}
+    plain_by_case = {c.loads.case: c for c in plain.cases}
+    for case in (LoadCase.PERMANENT, LoadCase.STORM):
+        # kH も低減されないので、変位・断面力は低減なしの結果と完全に一致する
+        assert by_case[case].springs.de == 1.0
+        assert by_case[case].springs.kh == pytest.approx(
+            plain_by_case[case].springs.kh
+        )
+        assert by_case[case].result.u == pytest.approx(plain_by_case[case].result.u)
+        assert reduced.bearing_for(case) is reduced.bearing
+    # 地震時だけが低減される
+    assert by_case[LoadCase.LEVEL1_EQ].springs.de < 1.0
+    assert by_case[LoadCase.LEVEL1_EQ].result.u > plain_by_case[LoadCase.LEVEL1_EQ].result.u
+    assert reduced.bearing_for(LoadCase.LEVEL1_EQ) is reduced.bearing_seismic
+    assert any("常時・暴風時の照査には適用していない" in n for n in reduced.notes)
+
+
+def test_load_case_seismic_flag():
+    assert LoadCase.LEVEL1_EQ.is_seismic
+    assert not LoadCase.PERMANENT.is_seismic
+    assert not LoadCase.STORM.is_seismic
 
 
 def test_liquefying_bearing_stratum_is_flagged():

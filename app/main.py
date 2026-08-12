@@ -221,6 +221,27 @@ def _render_comparison(rows: list, vertical_load: float, length: float) -> None:
     )
 
 
+def _skin_dataframe(bc) -> pd.DataFrame:
+    """周面摩擦力の内訳表。低減がある場合のみ DE の列を出す。"""
+    return pd.DataFrame(
+        [
+            {
+                "層名": s.layer_name,
+                "土質": s.soil_type.value,
+                "長さ (m)": round(s.length, 2),
+                "f (kN/m²)": round(s.f, 1),
+                **(
+                    {"DE": round(s.de, 2), "f′ (kN/m²)": round(s.f_design, 1)}
+                    if bc.has_reduced_skin
+                    else {}
+                ),
+                "U·L·f (kN)": round(s.force, 1),
+            }
+            for s in bc.skin_segments
+        ]
+    )
+
+
 def _render_stability(report: StabilityReport) -> None:
     """安定計算結果を画面に表示する。"""
     bc = report.bearing
@@ -247,43 +268,30 @@ def _render_stability(report: StabilityReport) -> None:
                 f"周面摩擦は杭先端から 1D 手前(深さ {bc.skin_bottom_depth:.2f} m)"
                 "までを計上(道示Ⅳ 12.4.1 の重複計上排除)"
             )
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "層名": s.layer_name,
-                        "土質": s.soil_type.value,
-                        "長さ (m)": round(s.length, 2),
-                        "f (kN/m²)": round(s.f, 1),
-                        **(
-                            {
-                                "DE": round(s.de, 2),
-                                "f·DE (kN/m²)": round(s.f_design, 1),
-                            }
-                            if bc.has_reduced_skin
-                            else {}
-                        ),
-                        "U·L·f (kN)": round(s.force, 1),
-                    }
-                    for s in bc.skin_segments
-                ]
-            ),
-            width="stretch",
-        )
-        if bc.has_reduced_skin:
-            lost = bc.skin_resistance_unreduced - bc.skin_resistance
+        st.dataframe(_skin_dataframe(bc), width="stretch")
+
+        seismic = report.bearing_seismic
+        if seismic is not None:
+            lost = seismic.skin_resistance_unreduced - seismic.skin_resistance
+            st.markdown("**液状化を考慮する地震時(f′ = DE × f)**")
             st.caption(
-                f"液状化による低減で周面摩擦力が {lost:,.0f} kN 減少している"
-                f"(低減前 {bc.skin_resistance_unreduced:,.0f} kN → "
-                f"{bc.skin_resistance:,.0f} kN)。"
-                "f への DE の適用は**原典未確認**(安全側の判断)。"
+                "液状化すると判定された層の最大周面摩擦力度に低減係数 DE を"
+                "乗じる(道示Ⅴ 8.2)。先端支持力度 qd は低減しない。"
+                "**この低減は耐震設計上の扱いで、常時・暴風時には適用しない。**"
             )
-        if bc.tip_zone_liquefies:
-            st.warning(
-                f"杭先端付近(先端±1D)が液状化すると判定されています"
-                f"(DE = {bc.tip_de:.2f})。先端支持力度 qd は低減していません。"
-                "支持層の設定・杭長を確認してください。"
+            st.dataframe(_skin_dataframe(seismic), width="stretch")
+            st.caption(
+                f"周面摩擦力 {seismic.skin_resistance_unreduced:,.0f} → "
+                f"{seismic.skin_resistance:,.0f} kN({lost:,.0f} kN の減少)、"
+                f"極限支持力 Ru {bc.ru:,.0f} → {seismic.ru:,.0f} kN。"
+                "引抜き抵抗は周面摩擦力のみで決まるため押込みより強く効く。"
             )
+            if seismic.tip_zone_liquefies:
+                st.warning(
+                    f"杭先端付近(先端±1D)が液状化すると判定されています"
+                    f"(DE = {seismic.tip_de:.2f})。先端支持力度 qd は低減して"
+                    "いません。支持層の設定・杭長を確認してください。"
+                )
 
     for case in report.cases:
         label = case.loads.case.value

@@ -187,10 +187,19 @@ def test_stability_reflects_the_reduction_when_enabled():
 
     report = at.session_state["report"]
     assert any("液状化による土質定数の低減" in n for n in report.notes)
-    assert report.cases[0].springs.de < 1.0
+
+    # DE は耐震設計上の扱い。常時には効かず、地震時だけに効く
+    by_case = {c.loads.case: c for c in report.cases}
+    assert by_case[LoadCase.PERMANENT].springs.de == 1.0
+    assert by_case[LoadCase.LEVEL1_EQ].springs.de < 1.0
+
     # 支持力側にも効く(kH だけでなく周面摩擦力度も低減される)
-    assert report.bearing.has_reduced_skin
-    assert report.bearing.skin_resistance < report.bearing.skin_resistance_unreduced
+    assert not report.bearing.has_reduced_skin  # 常時用は低減なし
+    seismic = report.bearing_seismic
+    assert seismic is not None and seismic.has_reduced_skin
+    assert seismic.skin_resistance < report.bearing.skin_resistance
+    assert report.bearing_for(LoadCase.PERMANENT) is report.bearing
+    assert report.bearing_for(LoadCase.LEVEL1_EQ) is seismic
     assert any("周面摩擦力度の低減内訳" in n for n in report.notes)
 
 
@@ -198,6 +207,7 @@ def test_stability_without_the_reduction_keeps_full_skin_friction():
     """既定(低減なし)では周面摩擦力が満額であること。"""
     at = run_app()
     next(b for b in at.button if "安定計算を実行" in b.label).click().run()
-    bearing = at.session_state["report"].bearing
-    assert not bearing.has_reduced_skin
-    assert all(s.de == 1.0 for s in bearing.skin_segments)
+    report = at.session_state["report"]
+    assert not report.bearing.has_reduced_skin
+    assert report.bearing_seismic is None
+    assert all(s.de == 1.0 for s in report.bearing.skin_segments)

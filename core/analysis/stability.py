@@ -85,10 +85,23 @@ class CaseResult:
 @dataclass(frozen=True)
 class StabilityReport:
     section: PileSection
-    bearing: BearingCapacity
+    bearing: BearingCapacity  # 常時・暴風時に用いる支持力(低減なし)
     cases: list[CaseResult]
     negative_friction: NegativeFrictionResult | None = None
     notes: list[str] = field(default_factory=list)  # 省略した照査などの注記
+    # 液状化を考慮する地震時の支持力(周面摩擦力度を DE で低減)。
+    # 低減がない場合は None で、全ケースが :attr:`bearing` を用いる。
+    bearing_seismic: BearingCapacity | None = None
+
+    def bearing_for(self, case: LoadCase) -> BearingCapacity:
+        """荷重ケースに適用する支持力。
+
+        DE による低減は**耐震設計上の扱い**であり、常時・暴風時には
+        適用しない(道示Ⅴ 8.2)。
+        """
+        if case.is_seismic and self.bearing_seismic is not None:
+            return self.bearing_seismic
+        return self.bearing
 
     @property
     def all_ok(self) -> bool:
@@ -120,14 +133,26 @@ def analyze(
     e0_method:
         変形係数 E0 の推定方法。kH の換算係数 α がこれにより決まる。
     reduction:
-        液状化に伴う土質定数の低減係数 DE(道示Ⅴ 8.2.4)。与えると kH に
-        乗じる。DE はレベル2地震動に対する液状化判定から得られるため、
-        常時・レベル1地震時に適用するかは利用者の判断となる(注記を出す)。
+        液状化に伴う土質定数の低減係数 DE(道示Ⅴ 8.2.4)。与えると
+        **水平方向地盤反力係数 kH と最大周面摩擦力度 f** に乗じる
+        (f′i = DE,i × fi)。
+
+        **DE による低減は耐震設計上の扱いであり、常時・暴風時の照査には
+        適用しない**。地震時のケースにのみ低減後の値を用い、常時・暴風時は
+        低減前の値で照査する(:meth:`StabilityReport.bearing_for`)。
+
+        なお DE 自体はレベル2地震動に対する液状化判定から得られる値である。
+        レベル1地震時の照査に用いることの適否は利用者の判断となる
+        (レベル1地震動に対する液状化判定は未実装。注記を出す)。
     """
     section = pile_section(pile, fck=fck)
-    bearing = compute_bearing_capacity(
-        pile, profile, footing.embedment, reduction=reduction
-    )
+    # 常時・暴風時は低減なし。DE は耐震設計上の扱いなので地震時のみ低減する
+    bearing = compute_bearing_capacity(pile, profile, footing.embedment)
+    bearing_seismic: BearingCapacity | None = None
+    if reduction is not None and reduction.has_reduction:
+        bearing_seismic = compute_bearing_capacity(
+            pile, profile, footing.embedment, reduction=reduction
+        )
     kv = axial_spring(pile, section)
     delta_a = allowable_displacement(pile.diameter)
 
@@ -162,40 +187,50 @@ def analyze(
         notes.append(
             f"液状化による土質定数の低減を kH と周面摩擦力度 f に反映している"
             f"(低減区間: 深さ {span[0]:.1f}〜{span[1]:.1f} m、"
-            f"{reduction.motion_type.value})。DE はレベル2地震動に対する"
-            "液状化判定から得た値であり、常時・レベル1地震時の照査に用いる"
-            "ことの適否は利用者が判断すること"
-            "(レベル1地震動に対する液状化判定は未実装)。"
+            f"{reduction.motion_type.value})。**DE による低減は耐震設計上の"
+            "扱いであり、常時・暴風時の照査には適用していない**"
+            "(道示Ⅴ 8.2)。また DE はレベル2地震動に対する液状化判定から"
+            "得た値であり、レベル1地震時の照査に用いることの適否は利用者が"
+            "判断すること(レベル1地震動に対する液状化判定は未実装)。"
         )
-        if bearing.has_reduced_skin:
-            lost = bearing.skin_resistance_unreduced - bearing.skin_resistance
-            ratio = lost / (bearing.ru + lost) if bearing.ru + lost > 0 else 0.0
+        if bearing_seismic is not None and bearing_seismic.has_reduced_skin:
+            lost = (
+                bearing_seismic.skin_resistance_unreduced
+                - bearing_seismic.skin_resistance
+            )
+            ratio = lost / bearing.ru if bearing.ru > 0 else 0.0
             reduced = ", ".join(
                 f"{s.layer_name}: f {s.f:.0f} → {s.f_design:.0f} kN/m²"
                 f"(DE={s.de:.2f})"
-                for s in bearing.skin_segments
+                for s in bearing_seismic.skin_segments
                 if s.is_reduced
             )
             notes.append(
-                f"周面摩擦力度の低減内訳 — {reduced}。"
-                f"極限支持力 Ru は {lost:.0f} kN 減少している"
-                f"(低減前比 {ratio * 100:.1f}%)。"
-                "**f への DE の適用は原典未確認**である。低減しないほうが"
-                "明確に非安全側であるため安全側の判断として適用している"
-                "(docs/VERIFICATION.md 参照)。"
+                f"地震時の周面摩擦力度の低減内訳 — {reduced}。"
+                f"極限支持力 Ru は {bearing.ru:.0f} → {bearing_seismic.ru:.0f} kN"
+                f"({lost:.0f} kN、{ratio * 100:.1f}% の減少)。"
+                "引抜き抵抗は周面摩擦力のみで決まるため、押込みより強く効く。"
             )
-        if bearing.tip_zone_liquefies:
+        if bearing_seismic is not None and bearing_seismic.tip_zone_liquefies:
             notes.append(
                 f"⚠ 杭先端付近(先端±1D)が液状化すると判定されている"
-                f"(DE={bearing.tip_de:.2f})。**先端支持力度 qd は低減して"
-                "いない**(支持層は液状化しない良質層であることが前提のため)。"
-                "支持層の設定が適切か、杭長を見直す必要がないかを確認すること。"
+                f"(DE={bearing_seismic.tip_de:.2f})。**先端支持力度 qd は"
+                "低減していない**(支持層は液状化しない良質層であることが"
+                "前提のため)。支持層の設定が適切か、杭長を見直す必要がないかを"
+                "確認すること。"
             )
     cases: list[CaseResult] = []
     for load in loads:
+        # DE による低減は耐震設計上の扱い。常時・暴風時には適用しない
+        case_reduction = reduction if load.case.is_seismic else None
+        case_bearing = (
+            bearing_seismic
+            if load.case.is_seismic and bearing_seismic is not None
+            else bearing
+        )
         springs = lateral_springs(
             pile, section, profile, footing.embedment, load.case,
-            e0_method=e0_method, reduction=reduction,
+            e0_method=e0_method, reduction=case_reduction,
         )
         result = solve_stability(
             arrangement,
@@ -211,7 +246,7 @@ def analyze(
             Check(
                 name="押込み支持力",
                 demand=result.max_axial,
-                capacity=bearing.allowable_push(load.case),
+                capacity=case_bearing.allowable_push(load.case),
                 unit="kN",
             ),
             Check(
@@ -227,7 +262,7 @@ def analyze(
                 Check(
                     name="引抜き抵抗力",
                     demand=-result.min_axial,
-                    capacity=bearing.allowable_pull(load.case),
+                    capacity=case_bearing.allowable_pull(load.case),
                     unit="kN",
                 )
             )
@@ -300,4 +335,5 @@ def analyze(
         cases=cases,
         negative_friction=nf,
         notes=notes,
+        bearing_seismic=bearing_seismic,
     )

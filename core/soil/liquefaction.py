@@ -295,14 +295,17 @@ class SoilReduction:
        (用いる場合は安全側の代用となる)。
 
     .. note::
-       **周面摩擦力度 f** への低減は
-       :func:`core.capacity.bearing.compute_bearing_capacity` で適用している。
-       ただし原典未確認であり、低減しないほうが明確に非安全側であることを
-       根拠とした安全側の判断である(docs/VERIFICATION.md 第21回)。
+       **最大周面摩擦力度 f** への低減(f′i = DE,i × fi)は
+       :func:`core.capacity.bearing.compute_bearing_capacity` で適用している
+       (提供資料で確認済み。docs/VERIFICATION.md 第21・22回)。
 
        **受働土圧強度**(pHU の算定に用いる pEP)への低減は未適用。
        レベル2の分布バネモデルでは pHU そのものに DE を乗じているため、
        杭前面地盤の抵抗としては低減が効いている。
+
+    .. important::
+       DE による低減は**耐震設計上の扱い**であり、常時・暴風時の照査には
+       適用しない。
     """
 
     # (上端深度, 下端深度, DE) の並び。深度は地表面から。
