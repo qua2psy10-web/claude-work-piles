@@ -360,6 +360,17 @@ def test_young_modulus_table_matches_doushi_iii_table_3_3_3():
     assert 80 not in st.EC_CONCRETE
 
 
+def test_sc_pile_concrete_young_modulus():
+    """SC杭のコンクリートは H24版で Ec = 3.5×10⁴ N/mm²(H29版は 4.0×10⁴)。"""
+    assert st.EC_SC_PILE_CONCRETE == 3.5e7
+    # σck = 80 は表の範囲外なので、表引きではなく専用の定数である
+    assert 80 not in st.EC_CONCRETE
+    # 表-3.3.3 の上限(σck = 60)と同値。外挿せず頭打ちにしていると解釈できる
+    assert st.EC_SC_PILE_CONCRETE == st.EC_CONCRETE[60]
+    # 資料の n = Es/Ec = 5.71 と整合すること
+    assert st.E_STEEL / st.EC_SC_PILE_CONCRETE == pytest.approx(5.71, abs=0.005)
+
+
 def test_young_modulus_ratio_is_the_fixed_value_15():
     """RC の応力度計算のヤング係数比は Es/Ec ではなく一定値 15(道示Ⅲ 3.3)。"""
     assert st.YOUNG_MODULUS_RATIO_RC == 15.0

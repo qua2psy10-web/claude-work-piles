@@ -15,7 +15,7 @@ from core.models import (
     PileSpec,
     PileType,
 )
-from core.standards import EC_CONCRETE, E_STEEL
+from core.standards import EC_CONCRETE, EC_SC_PILE_CONCRETE, E_STEEL
 
 
 def test_hollow_circle_matches_formula():
@@ -75,8 +75,12 @@ def test_young_modulus_can_be_given_directly():
 
 
 def test_direct_young_modulus_applies_to_the_sc_transformed_section():
-    """SC杭の換算断面比 n = Es/Ec にも直接入力の Ec が効くこと。"""
-    ec = 4.0e7
+    """SC杭の換算断面比 n = Es/Ec にも直接入力の Ec が効くこと。
+
+    H29版を適用する場合(Ec = 4.0×10⁴)や、製品表の換算基準に合わせる場合に
+    H24版の規定値を上書きできる必要がある。
+    """
+    ec = 4.0e7  # H29版の値
     pile = sc_pile().model_copy(update={"concrete_young": ec})
     section = pile_section(pile, fck=80)
     t_steel = (9.0 - 1.0) / 1000.0
@@ -88,6 +92,8 @@ def test_direct_young_modulus_applies_to_the_sc_transformed_section():
         pile.model_copy(update={"concrete_young": 2.5e7}), fck=80
     )
     assert section.inertia > softer.inertia
+    # 既定(H24版 3.5×10⁴)より硬くなる
+    assert section.inertia > pile_section(sc_pile(), fck=80).inertia
 
 
 def test_direct_young_modulus_applies_to_cast_in_place():
@@ -122,13 +128,50 @@ def test_sc_pile_is_transformed_section():
     t_steel = (9.0 - 1.0) / 1000.0  # 腐食代控除
     steel = hollow_circle(0.6, t_steel)
     concrete = hollow_circle(0.6 - 2 * t_steel, 0.08)
-    n = E_STEEL / EC_CONCRETE[30]
+    n = E_STEEL / EC_SC_PILE_CONCRETE
 
     assert section.young == E_STEEL
     assert section.area == pytest.approx(steel[0] + concrete[0] / n)
     assert section.inertia == pytest.approx(steel[1] + concrete[1] / n)
     # 鋼管だけより硬い(コンクリートの寄与がある)
     assert section.inertia > steel[1]
+
+
+def test_sc_pile_stiffness_equals_ec_ic_plus_es_is():
+    """SC杭の合成断面: EI = Ec・Ic + Es・Is、EA = Ec・Ac + Es・As。
+
+    本実装は鋼基準の換算断面だが、それが合成断面の定義式と一致することを
+    直接確かめる。**コンクリート基準の Ie に Es を掛ける**のは鋼管の寄与を
+    重複計上する誤りであり、その値とは一致しないことも併せて固定する。
+    """
+    section = pile_section(sc_pile())
+    t_steel = (9.0 - 1.0) / 1000.0
+    area_s, inertia_s = hollow_circle(0.6, t_steel)
+    area_c, inertia_c = hollow_circle(0.6 - 2 * t_steel, 0.08)
+    ec = EC_SC_PILE_CONCRETE
+
+    assert section.young * section.inertia == pytest.approx(
+        ec * inertia_c + E_STEEL * inertia_s
+    )
+    assert section.young * section.area == pytest.approx(
+        ec * area_c + E_STEEL * area_s
+    )
+    # コンクリート基準の Ie に Es を掛けた「避けるべき設定」の値
+    wrong = E_STEEL * (inertia_c + (E_STEEL / ec) * inertia_s)
+    assert wrong > section.young * section.inertia
+
+
+def test_sc_pile_young_modulus_does_not_come_from_the_sigma_ck_table():
+    """SC杭の Ec は σck から表引きしない(σck=80 は表の範囲外のため)。"""
+    pile = sc_pile()
+    # fck を変えても断面は変わらない
+    assert pile_section(pile, fck=24).inertia == pytest.approx(
+        pile_section(pile, fck=40).inertia
+    )
+    # 表の範囲外の σck でもエラーにならない
+    assert pile_section(pile, fck=80).inertia > 0
+    # H24版の規定値。H29版の 4.0×10⁴ とは異なる
+    assert EC_SC_PILE_CONCRETE == 3.5e7
 
 
 def test_sc_pile_requires_both_thicknesses():

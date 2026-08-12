@@ -144,6 +144,32 @@ def test_phc_stress_check_runs_with_young_modulus_note():
     assert any("表-3.3.3" in note for note in report.notes)
 
 
+def test_sc_pile_note_states_the_composite_section_and_the_version():
+    """SC杭は合成断面で EI を評価し、H24/H29 の版差を注記すること。"""
+    from core.section.checks import MaterialSpec
+
+    _, arrangement, footing, profile = sample_inputs()
+    sc = PileSpec(
+        pile_type=PileType.SC,
+        method=ConstructionMethod.DRIVEN,
+        diameter=0.6,
+        length=18.0,
+        wall_thickness=9.0,
+        concrete_thickness=80.0,
+    )
+    loads = [FootingLoads(case=LoadCase.PERMANENT, v=3000.0, h=200.0, m=800.0)]
+    report = analyze(
+        sc, arrangement, footing, profile, loads,
+        fck=30, material=MaterialSpec(fck=30),
+    )
+    note = next(n for n in report.notes if "SC杭" in n)
+    assert "合成断面" in note
+    assert "3.5×10⁴" in note
+    assert "H29" in note
+    # PHC 向けの「表の範囲外」警告は出ない(SC杭は値が定まっている)
+    assert not any("表-3.3.3" in n for n in report.notes)
+
+
 def test_phc_with_a_given_young_modulus_changes_the_stiffness_and_the_note():
     """Ec を直接入力すると EI が変わり、注記も「入力値を使った」旨に変わる。"""
     from core.section.checks import MaterialSpec

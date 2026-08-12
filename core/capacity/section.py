@@ -13,7 +13,7 @@ import math
 
 from core.capacity.springs import PileSection
 from core.models.pile import BendingAxis, HSection, PileSpec, PileType
-from core.standards import EC_CONCRETE, E_STEEL
+from core.standards import EC_CONCRETE, EC_SC_PILE_CONCRETE, E_STEEL
 
 # 鋼管杭の腐食代 (mm)(道示Ⅳ 12.10)
 CORROSION_ALLOWANCE_MM = 1.0
@@ -133,7 +133,7 @@ def pile_section(
         )
 
     if pile.pile_type == PileType.SC:
-        return _sc_section(pile, fck, corrosion_mm)
+        return _sc_section(pile, corrosion_mm)
 
     if pile.pile_type == PileType.H_STEEL:
         if pile.h_section is None:
@@ -144,10 +144,31 @@ def pile_section(
     raise NotImplementedError(f"{pile.pile_type.value}の断面計算は未実装です")
 
 
-def _sc_section(pile: PileSpec, fck: int, corrosion_mm: float) -> PileSection:
+def _sc_section(pile: PileSpec, corrosion_mm: float) -> PileSection:
     """SC杭(外側鋼管 + 内側コンクリート)の換算断面。
 
-    鋼を基準とし、コンクリート部の寄与を 1/n(n = Es/Ec)倍して合算する。
+    SC杭の曲げ剛性 EI は**鋼管とコンクリートをともに考慮した合成断面**で
+    評価する(鋼管のみで評価するのではない)。すなわち
+
+        EI = Ec・Ic + Es・Is
+
+    である。本実装は**鋼を基準**とした換算断面をとり、コンクリート部の寄与を
+    1/n(n = Es/Ec)倍して合算する:
+
+        E = Es,  I = Is + Ic/n = Is +(Ec/Es)・Ic
+        → EI = Es・Is + Ec・Ic  ✓(上式と一致する)
+
+    軸方向も同様に EA = Es・As + Ec・Ac となり、Kv = a・Ap・Ep/L と整合する。
+
+    .. warning::
+       コンクリート基準で整理された換算断面二次モーメント Ie(= Ic + n・Is)に
+       Es を掛けると、鋼管の寄与を重複計上して EI を過大評価する。製品の
+       断面性能表を使う場合は、その換算基準がどちらの材料かを必ず確認すること。
+
+    ヤング係数は σck からは引かず、SC杭に対して定められた値
+    (:data:`core.standards.EC_SC_PILE_CONCRETE`)を用いる。SC杭の
+    コンクリートは σck = 80 N/mm² であり、道示Ⅲ 表-3.3.3(σck ≤ 60)の
+    範囲外だからである。``PileSpec.concrete_young`` があればそちらを優先する。
     """
     if pile.wall_thickness is None:
         raise ValueError("SC杭は鋼管の板厚 wall_thickness の入力が必要です")
@@ -167,7 +188,7 @@ def _sc_section(pile: PileSpec, fck: int, corrosion_mm: float) -> PileSection:
         concrete_outer, pile.concrete_thickness / 1000.0
     )
 
-    ec = _concrete_young(fck, pile.concrete_young)
+    ec = pile.concrete_young or EC_SC_PILE_CONCRETE
     n = E_STEEL / ec
     return PileSection(
         area=steel_area + concrete_area / n,

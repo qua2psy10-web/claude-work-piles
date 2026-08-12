@@ -22,6 +22,7 @@ from core.standards import (
     ALLOWABLE_DISPLACEMENT_DIA_THRESHOLD,
     ALLOWABLE_DISPLACEMENT_MM,
     ALLOWABLE_DISPLACEMENT_RATIO,
+    EC_SC_PILE_CONCRETE,
     E0Method,
 )
 
@@ -137,11 +138,19 @@ def analyze(
                 "許容応力度は既製コンクリート杭として規定された値を用いており、"
                 "σck の入力値には依存しない。"
             )
+        elif pile.pile_type == PileType.SC:
+            notes.append(
+                "SC杭の断面剛性は鋼管とコンクリートの合成断面で評価している"
+                f"(EI = Ec・Ic + Es・Is、Ec = {EC_SC_PILE_CONCRETE / 1.0e7:.1f}"
+                "×10⁴ N/mm²、H24版の値)。σck の入力値には依存しない。"
+                "H29版では Ec = 4.0×10⁴ N/mm² に改定されているため、"
+                "製品の断面性能表を併用する場合は版の整合を確認すること。"
+            )
         else:
             notes.append(
-                f"{pile.pile_type.value}の標準である σck = 80 N/mm² は道示Ⅲ "
-                "表-3.3.3(σck = 21〜60)の範囲外であり、ヤング係数が規定されて"
-                "いない。断面剛性 EI には入力した σck の Ec を用いているため"
+                "PHC杭の標準である σck = 80 N/mm² は道示Ⅲ 表-3.3.3"
+                "(σck = 21〜60)の範囲外であり、ヤング係数が規定されていない。"
+                "断面剛性 EI には入力した σck の Ec を用いているため"
                 "(断面力・変位に影響する)、メーカーの断面性能表等の Ec を"
                 "直接入力することを推奨する。許容応力度は既製コンクリート杭として"
                 "規定された値を用いており、σck の入力値には依存しない。"
