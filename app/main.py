@@ -550,6 +550,57 @@ def _render_stress_checks(case) -> None:
                 f"σs(引張) = {d.sigma_s_tension:.1f} N/mm²"
             )
 
+    if case.shear is not None:
+        sh = case.shear
+        st.markdown("**杭体のせん断照査(道示Ⅳ 5.1.3)**")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("換算幅 b", f"{sh.width * 1000:,.0f} mm")
+        c2.metric("有効高 d", f"{sh.effective_depth * 1000:,.0f} mm")
+        c3.metric("τm", f"{sh.tau_m:.3f} N/mm²")
+        c4.metric("τa1(補正後)", f"{sh.tau_a1:.3f} N/mm²")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "照査項目": c.name,
+                        "τm (N/mm²)": round(c.stress, 3),
+                        "許容値 (N/mm²)": round(c.allowable, 3),
+                        "比": round(c.ratio, 3),
+                        "判定": c.judgement,
+                    }
+                    for c in sh.checks
+                ]
+            ),
+            width="stretch",
+        )
+        st.caption(
+            f"照査断面: 深さ {sh.depth:.2f} m(せん断力最大)、"
+            f"S = {sh.shear:,.1f} kN。b・d は面積の等しい正方形断面に置換えて"
+            f"求める(図-解4.2.2)。補正係数 ce = {sh.ce:.3f}、"
+            f"cpt = {sh.cpt:.3f}(pt = {sh.pt:.3f}%)、cN = {sh.cn:.3f}"
+            + ("。地震時は τa1×1.5 の代わりに τc を用いている" if sh.seismic else "")
+        )
+        if sh.needs_stirrup:
+            aw = sh.required_aw_per_spacing
+            msg = (
+                f"τm = {sh.tau_m:.3f} が τa1 = {sh.tau_a1:.3f} N/mm² を超えるため"
+                f"**斜引張鉄筋が必要**です(Sca = "
+                f"{sh.concrete_shear_capacity:,.0f} kN)。"
+            )
+            if aw is not None:
+                msg += (
+                    f" 帯鉄筋(θ=90°、σsa = {sh.stirrup_sigma_sa:.0f} N/mm²)"
+                    f"として Aw/s = {aw:.4f} mm²/mm"
+                    f"(間隔150mm なら Aw = {aw * 150:.0f} mm²)。"
+                )
+            st.warning(msg)
+        else:
+            st.caption(
+                f"コンクリートのみでせん断力を負担できます"
+                f"(τm ≤ τa1 = {sh.tau_a1:.3f} N/mm²)。"
+                "構造細目上の最小帯鉄筋量は別途確認してください。"
+            )
+
     if case.pile_head is not None:
         st.markdown("**杭頭結合部の照査(道示Ⅳ 12.9.3)**")
         st.dataframe(

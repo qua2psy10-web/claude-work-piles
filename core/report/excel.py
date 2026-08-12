@@ -350,6 +350,43 @@ def _sheet_case(ws: Worksheet, report: StabilityReport, case) -> None:
             stress_rows,
             judge_col=7,
         )
+    if case.shear is not None:
+        sh = case.shear
+        row = _write_table(
+            ws,
+            row,
+            ["せん断照査(道示Ⅳ 5.1.3)", "値", "単位"],
+            [
+                ["照査深さ", round(sh.depth, 3), "m"],
+                ["作用せん断力 S", round(sh.shear, 2), "kN"],
+                ["換算幅 b", round(sh.width * 1000, 1), "mm"],
+                ["有効高 d", round(sh.effective_depth * 1000, 1), "mm"],
+                ["軸方向引張鉄筋比 pt", round(sh.pt, 4), "%"],
+                ["補正係数 ce", round(sh.ce, 4), "—"],
+                ["補正係数 cpt", round(sh.cpt, 4), "—"],
+                ["補正係数 cN", round(sh.cn, 4), "—"],
+                ["平均せん断応力度 τm", round(sh.tau_m, 4), "N/mm²"],
+                ["許容せん断応力度 τa1(補正後)", round(sh.tau_a1, 4), "N/mm²"],
+                ["許容せん断応力度 τa2", round(sh.tau_a2, 4), "N/mm²"],
+                ["コンクリート負担 Sca", round(sh.concrete_shear_capacity, 1), "kN"],
+                ["斜引張鉄筋", "必要" if sh.needs_stirrup else "不要", "—"],
+                *(
+                    [["必要量 Aw/s(θ=90°)", round(sh.required_aw_per_spacing, 4), "mm²/mm"]]
+                    if sh.needs_stirrup and sh.required_aw_per_spacing is not None
+                    else []
+                ),
+            ],
+        )
+        row = _write_table(
+            ws,
+            row,
+            ["せん断 照査項目", "τm (N/mm²)", "許容値", "比", "判定"],
+            [
+                [c.name, round(c.stress, 4), round(c.allowable, 3), round(c.ratio, 3), c.judgement]
+                for c in sh.checks
+            ],
+            judge_col=5,
+        )
     if case.pile_head is not None:
         row = _write_table(
             ws,

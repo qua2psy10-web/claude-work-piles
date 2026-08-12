@@ -390,8 +390,67 @@ def _case_section(case: CaseResult) -> str:
             )
         )
 
+    if case.shear is not None:
+        sh = case.shear
+        s.append("\n### 4.6 杭体のせん断照査(道示Ⅳ 5.1.3)\n")
+        s.append(
+            "\nτm = Sh /(b・d)。杭は等断面なので Sh = S(有効高の変化の項は 0)。\n"
+            "円形断面の b・d は面積の等しい正方形断面に置換えて求める"
+            "(道示Ⅳ 図-解4.2.2)。\n\n"
+            f"- 照査断面: 深さ {sh.depth:.2f} m(せん断力最大)、"
+            f"S = {_num(sh.shear, 1)} kN、M = {_num(sh.moment, 1)} kN·m、"
+            f"N = {_num(sh.axial, 1)} kN\n"
+            f"- 換算幅 b = {sh.width * 1000:.1f} mm、"
+            f"有効高 d = {sh.effective_depth * 1000:.1f} mm\n"
+            f"- 平均せん断応力度 τm = {sh.tau_m:.3f} N/mm²\n"
+            f"- 補正係数: ce = {sh.ce:.3f}(有効高)、"
+            f"cpt = {sh.cpt:.3f}(pt = {sh.pt:.3f}%)、"
+            f"cN = {sh.cn:.3f}(軸方向圧縮力)\n"
+        )
+        if sh.seismic:
+            s.append(
+                "- 地震時のため、τa1 に割増係数 1.50 を乗じる代わりに"
+                "表-5.2.1 の τc を用いている\n"
+            )
+        s.append(
+            "\n"
+            + _table(
+                ["照査項目", "τm (N/mm²)", "許容値 (N/mm²)", "比", "判定"],
+                [
+                    [
+                        c.name,
+                        _num(c.stress, 3),
+                        _num(c.allowable, 3),
+                        f"{c.ratio:.3f}",
+                        c.judgement,
+                    ]
+                    for c in sh.checks
+                ],
+            )
+        )
+        if sh.needs_stirrup:
+            aw = sh.required_aw_per_spacing
+            s.append(
+                f"\n> **斜引張鉄筋が必要**: τm = {sh.tau_m:.3f} が"
+                f" τa1 = {sh.tau_a1:.3f} N/mm² を超えている。\n"
+                f"> コンクリートが負担できるせん断力 Sca = τa1・b・d = "
+                f"{_num(sh.concrete_shear_capacity, 1)} kN。\n"
+            )
+            if aw is not None:
+                s.append(
+                    f"> 帯鉄筋(θ = 90°、σsa = {sh.stirrup_sigma_sa:.0f} N/mm²)"
+                    f"として必要量は **Aw/s = {aw:.4f} mm²/mm**"
+                    f"(間隔 150mm なら Aw = {aw * 150:.0f} mm²)。\n"
+                )
+        else:
+            s.append(
+                f"\n> コンクリートのみでせん断力を負担できる"
+                f"(τm = {sh.tau_m:.3f} ≤ τa1 = {sh.tau_a1:.3f} N/mm²)。"
+                "ただし構造細目上の最小帯鉄筋量は別途確認すること。\n"
+            )
+
     if case.pile_head is not None:
-        s.append("\n### 4.6 杭頭結合部の照査(道示Ⅳ 12.9.3)\n")
+        s.append("\n### 4.7 杭頭結合部の照査(道示Ⅳ 12.9.3)\n")
         s.append(
             _table(
                 ["照査項目", "応力度 (N/mm²)", "許容値 (N/mm²)", "比", "判定"],

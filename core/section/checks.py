@@ -212,7 +212,11 @@ def _check_phc(
 
 
 def rebar_tension_allowable(
-    grade: str, case: LoadCase, underwater: bool, increase: float
+    grade: str,
+    case: LoadCase,
+    underwater: bool,
+    increase: float,
+    axial_rebar: bool = True,
 ) -> float:
     """鉄筋の許容引張応力度 (N/mm2)(道示Ⅳ(H24) 4.3、表-4.3.1)。
 
@@ -232,6 +236,10 @@ def rebar_tension_allowable(
     underwater:
         水中又は地下水位以下に設ける部材か。場所打ち杭は水中施工であり、
         地下水位以下にもなるため真とする。地震時の区分にはこの区別がない。
+    axial_rebar:
+        軸方向鉄筋か。地震時の基本値が軸方向鉄筋(200/230/290)と
+        それ以外(一律 200)で異なるため、**斜引張鉄筋・帯鉄筋では偽**に
+        すること。地震を含まない組合せではこの区別はない。
     """
     if grade in REMOVED_REBAR_GRADES:
         raise ValueError(
@@ -239,8 +247,12 @@ def rebar_tension_allowable(
             f"許容引張応力度が規定されていません。対応材質: {list(REBAR_GRADES)}"
         )
     if case.is_seismic:
-        # 地震の影響を含む組合せ。杭体の軸方向鉄筋なので「軸方向鉄筋」の行
-        table = SIGMA_SA_REBAR_SEISMIC[RebarMember.AXIAL.value]
+        key = (
+            RebarMember.AXIAL.value
+            if axial_rebar
+            else RebarMember.OTHER_SEISMIC.value
+        )
+        table = SIGMA_SA_REBAR_SEISMIC[key]
     else:
         key = (
             RebarMember.UNDERWATER.value if underwater else RebarMember.GENERAL.value
