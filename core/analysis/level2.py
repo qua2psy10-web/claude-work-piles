@@ -16,10 +16,11 @@
 押込み側は押込み支持力の上限値 Pu、引抜き側は引抜き抵抗力の上限値 Pt で
 頭打ちとなるバイリニアモデルとする。
 
-水平方向の地盤反力(K1〜K4)は**弾性のまま**であり、水平地盤反力度の
-上限値 pHU による塑性化は取り込んでいない。ただし
-:func:`check_soil_reaction_limit` により、弾性モデルの地盤反力度が pHU を
-超える区間があるかを**診断**し、非安全側になっている深度を提示する。
+水平方向は、地層に地震時受働土圧係数 KEP が入力されていれば**分布バネ
+モデル**(:mod:`core.analysis.bnwf`)で解き、水平地盤反力度の上限値 pHU に
+よる地盤の塑性化を取り込む。KEP が無い場合は従来どおり杭頭バネ K1〜K4 に
+よる弾性解析となり、:func:`check_soil_reaction_limit` により pHU を超える
+区間があるかを**診断**して非安全側になっている深度を提示する。
 
 杭体の曲げ剛性低下(M-φ 関係)も追跡していない。杭体の降伏は、鋼管杭では
 全塑性モーメント Mp(:func:`plastic_moment_steel_pipe`)、その他の杭種では
@@ -27,10 +28,10 @@
 
     「軸方向バネの塑性化と杭体降伏の判定に基づく降伏点の推定」
 
-であり、道示Ⅴ の完全な地震時保有水平耐力法ではない。完全な照査には、杭を
-軸方向に分割して各節点に弾塑性地盤バネを配置し、要素ごとに M-φ で剛性を
-更新する分布バネモデル(BNWF)が必要になる。制限は :data:`LIMITATIONS` に
-列挙し、結果にも注記として付す。
+であり、道示Ⅴ の完全な地震時保有水平耐力法ではない。残る主な差は、要素ごと
+に M-φ で曲げ剛性を更新していない点である。制限は :data:`LIMITATIONS`
+(および解析方法に応じて :data:`LIMITATION_ELASTIC_GROUND` /
+:data:`LIMITATION_BNWF`)に列挙し、結果にも注記として付す。
 """
 from __future__ import annotations
 
@@ -39,6 +40,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from core.analysis.bnwf import PileLateralModel
 from core.analysis.displacement import PileReaction, pile_x_coordinates
 from core.analysis.section_forces import distribution
 from core.capacity.bearing import BearingCapacity, compute_bearing_capacity
@@ -65,11 +67,22 @@ from core.standards import (
 
 
 # 本解析の制限(結果の注記として利用者に提示する)
+# 水平地盤バネを弾性のまま解いた場合にのみ付す制限
+LIMITATION_ELASTIC_GROUND = (
+    "水平地盤反力を弾性(杭頭バネ K1〜K4)のまま解いており、水平地盤反力度の"
+    "上限値 pHU による塑性化を取り込んでいない。したがって降伏水平力を過大に、"
+    "降伏変位を過小に評価するおそれがある。地層に KEP を入力すると分布バネ"
+    "モデル(BNWF)で解析され、この制限は解消する。"
+)
+
+# 分布バネモデルで解いた場合の注意
+LIMITATION_BNWF = (
+    "分布バネモデルは杭を有限個の要素に分割した数値解であり、地盤バネが弾性の"
+    "範囲では Chang の式(K1〜K4)に 2次で収束する。分割数が粗いと杭頭"
+    "モーメントに数%の差が出る。"
+)
+
 LIMITATIONS: tuple[str, ...] = (
-    "水平地盤反力は弾性(K1〜K4)のままであり、水平地盤反力度の上限値 pHU "
-    "による塑性化を解析に取り込んでいない。したがって降伏水平力を過大に、"
-    "降伏変位を過小に評価するおそれがある。ただし地層に KEP を入力すれば、"
-    "pHU を超える区間があるかを診断として確認できる。",
     "杭体の M-φ 関係は、鋼管杭・鋼管ソイルセメント杭のバイリニア型"
     "(全塑性モーメント Mp を上限とする)の折れ点のみを算定している。"
     "場所打ちRC杭・PHC杭・SC杭のトリリニア型(ひび割れ C・降伏 Y・終局 U)は"
@@ -150,6 +163,7 @@ class PushoverStep:
     reactions: list[PileReaction]
     plastic_axial: int  # 軸方向バネが上限に達した杭の本数
     yielded_piles: int  # 杭体が降伏した杭の本数
+    plastic_ground_nodes: int = 0  # pHU に達した水平地盤バネの数(BNWF時)
 
     @property
     def max_axial(self) -> float:
@@ -306,9 +320,7 @@ class Level2Check:
 def _solve_step(
     xs: np.ndarray,
     axial: AxialSpringModel,
-    k1: float,
-    k2: float,
-    k4: float,
+    lateral: LateralModel,
     v_load: float,
     h_load: float,
     m_load: float,
@@ -318,9 +330,9 @@ def _solve_step(
 ) -> np.ndarray:
     """1ステップの非線形釣合いを Newton-Raphson 法で解く。
 
-    未知数は (u, v, θ)。水平方向は弾性、軸方向はバイリニア。
+    未知数はフーチングの (u, v, θ)。軸方向はバイリニア、水平方向は
+    ``lateral`` が返す接線剛性による(弾性バネまたは BNWF)。
     """
-    n = len(xs)
     x = initial.copy()
     # 荷重の代表スケール(収束判定を荷重の大きさに対する相対値で行う)
     scale = max(abs(v_load), abs(h_load), abs(m_load), 1.0)
@@ -330,12 +342,13 @@ def _solve_step(
         disp = v + xs * theta
         forces = np.array([axial.reaction(float(d)) for d in disp])
         tangents = np.array([axial.tangent(float(d)) for d in disp])
+        shear, moment, lateral_tangent = lateral.responses(float(u), float(theta))
 
         residual = np.array(
             [
-                n * k1 * u + n * k2 * theta - h_load,
+                float(shear.sum()) - h_load,
                 float(forces.sum()) - v_load,
-                n * k2 * u + n * k4 * theta + float((xs * forces).sum()) - m_load,
+                float(moment.sum()) + float((xs * forces).sum()) - m_load,
             ]
         )
         if float(np.max(np.abs(residual))) <= tol * scale:
@@ -346,9 +359,9 @@ def _solve_step(
         sum_x2_kt = float((xs**2 * tangents).sum())
         jac = np.array(
             [
-                [n * k1, 0.0, n * k2],
+                [lateral_tangent[0, 0], 0.0, lateral_tangent[0, 1]],
                 [0.0, sum_kt, sum_x_kt],
-                [n * k2, sum_x_kt, n * k4 + sum_x2_kt],
+                [lateral_tangent[1, 0], sum_x_kt, lateral_tangent[1, 1] + sum_x2_kt],
             ]
         )
         try:
@@ -369,12 +382,14 @@ class _Unstable(RuntimeError):
 def pushover(
     arrangement: PileArrangement,
     axial: AxialSpringModel,
-    k1: float,
-    k2: float,
-    k4: float,
-    v_load: float,
-    h_load: float,
-    m_load: float,
+    k1: float | None = None,
+    k2: float | None = None,
+    k4: float | None = None,
+    *,
+    lateral: LateralModel | None = None,
+    v_load: float = 0.0,
+    h_load: float = 0.0,
+    m_load: float = 0.0,
     yield_moment: float | None = None,
     max_factor: float = 3.0,
     steps: int = 120,
@@ -386,6 +401,12 @@ def pushover(
 
     Parameters
     ----------
+    k1, k2, k4:
+        弾性の杭頭バネ。``lateral`` を与える場合は不要。
+    lateral:
+        水平方向のモデル。省略時は ``k1``〜``k4`` による弾性バネを用いる。
+        :class:`BnwfLateralModel` を与えると、地盤の塑性化(pHU による
+        頭打ち)を解析に取り込む。
     yield_moment:
         杭体の降伏曲げモーメント My (kN·m)。与えると「全杭の杭体が降伏」も
         降伏条件として判定する。省略時は軸方向支持力の上限到達のみで判定する。
@@ -416,6 +437,10 @@ def pushover(
 
     xs = np.array(pile_x_coordinates(arrangement), dtype=float)
     n_piles = len(xs)
+    if lateral is None:
+        if k1 is None or k2 is None or k4 is None:
+            raise ValueError("k1・k2・k4 または lateral のいずれかが必要です")
+        lateral = LinearLateralModel(n_piles=n_piles, k1=k1, k2=k2, k4=k4)
 
     results: list[PushoverStep] = []
     yield_point: YieldPoint | None = None
@@ -426,7 +451,7 @@ def pushover(
         m = m_load * factor
         try:
             x = _solve_step(
-                xs, axial, k1, k2, k4, v_load, h, m, initial=x
+                xs, axial, lateral, v_load, h, m, initial=x
             )
         except _Unstable as exc:
             if yield_point is None and results:
@@ -435,13 +460,14 @@ def pushover(
 
         u, v, theta = (float(val) for val in x)
         disp = v + xs * theta
+        head_shear, head_moment, _ = lateral.responses(u, theta)
         reactions = [
             PileReaction(
                 index=idx + 1,
                 x=float(px),
                 axial=axial.reaction(float(d)),
-                shear=k1 * u + k2 * theta,
-                moment=k2 * u + k4 * theta,
+                shear=float(head_shear[idx]),
+                moment=float(head_moment[idx]),
             )
             for idx, (px, d) in enumerate(zip(xs, disp))
         ]
@@ -461,6 +487,7 @@ def pushover(
             reactions=reactions,
             plastic_axial=plastic,
             yielded_piles=yielded,
+            plastic_ground_nodes=lateral.plastic_ground_nodes,
         )
         results.append(step)
 
@@ -502,12 +529,14 @@ def _yield_reason(
 def analyze_level2(
     arrangement: PileArrangement,
     axial: AxialSpringModel,
-    k1: float,
-    k2: float,
-    k4: float,
-    v_load: float,
-    h_load: float,
-    m_load: float,
+    k1: float | None = None,
+    k2: float | None = None,
+    k4: float | None = None,
+    *,
+    lateral: LateralModel | None = None,
+    v_load: float = 0.0,
+    h_load: float = 0.0,
+    m_load: float = 0.0,
     yield_moment: float | None = None,
     allowable_ductility: float | None = None,
     allowable_displacement: float | None = None,
@@ -533,6 +562,7 @@ def analyze_level2(
         k1=k1,
         k2=k2,
         k4=k4,
+        lateral=lateral,
         v_load=v_load,
         h_load=h_load,
         m_load=m_load,
@@ -542,7 +572,10 @@ def analyze_level2(
     )
     response = _response_step(steps_list)
 
-    notes = list(LIMITATIONS)
+    notes = [
+        LIMITATION_BNWF if lateral is not None else LIMITATION_ELASTIC_GROUND,
+        *LIMITATIONS,
+    ]
     if response is None:
         notes.append(
             "設計レベル2荷重(λ = 1)に達する前に釣合いが保てなくなった。"
@@ -601,6 +634,130 @@ def yield_moment_steel_pipe(
             "達しており、曲げに対する余裕がありません"
         )
     return (sigma_y - sigma_axial) * section_modulus * 1000.0
+
+
+class LateralModel:
+    """フーチング変位 (u, θ) から全杭の杭頭反力と接線剛性を返すモデル。
+
+    フーチングを剛体としているため全杭の杭頭変位は等しいが、砂質地盤では
+    最前列以外の杭の pHU が 1/2 になるため、杭ごとに応答が異なり得る。
+    """
+
+    def responses(
+        self, u: float, theta: float
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """(杭ごとの H, 杭ごとの M, 全杭合計の接線剛性 2×2) を返す。"""
+        raise NotImplementedError
+
+    @property
+    def plastic_ground_nodes(self) -> int:
+        """直近の :meth:`responses` で塑性化した地盤バネの数。"""
+        return 0
+
+
+@dataclass
+class LinearLateralModel(LateralModel):
+    """従来どおりの弾性杭頭バネ K1〜K4 によるモデル。"""
+
+    n_piles: int
+    k1: float
+    k2: float
+    k4: float
+
+    def responses(
+        self, u: float, theta: float
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        shear = np.full(self.n_piles, self.k1 * u + self.k2 * theta)
+        moment = np.full(self.n_piles, self.k2 * u + self.k4 * theta)
+        tangent = self.n_piles * np.array(
+            [[self.k1, self.k2], [self.k2, self.k4]]
+        )
+        return shear, moment, tangent
+
+
+@dataclass
+class BnwfLateralModel(LateralModel):
+    """分布バネモデル(BNWF)による杭頭応答。
+
+    最前列とそれ以外で pHU が異なるため、2 つの杭モデルを持ち、杭の
+    x 座標から所属を決める。
+    """
+
+    front_mask: np.ndarray  # 各杭が最前列か
+    front: PileLateralModel
+    back: PileLateralModel
+    _plastic: int = 0
+
+    def responses(
+        self, u: float, theta: float
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        front = self.front.solve(u, theta)
+        n_front = int(np.count_nonzero(self.front_mask))
+        n_back = len(self.front_mask) - n_front
+
+        shear = np.where(self.front_mask, front.shear, 0.0)
+        moment = np.where(self.front_mask, front.moment, 0.0)
+        tangent = n_front * front.tangent
+        self._plastic = n_front * front.plastic_nodes
+
+        if n_back:
+            back = self.back.solve(u, theta)
+            shear = np.where(self.front_mask, shear, back.shear)
+            moment = np.where(self.front_mask, moment, back.moment)
+            tangent = tangent + n_back * back.tangent
+            self._plastic += n_back * back.plastic_nodes
+        return shear, moment, tangent
+
+    @property
+    def plastic_ground_nodes(self) -> int:
+        return self._plastic
+
+
+def build_bnwf_model(
+    pile: PileSpec,
+    arrangement: PileArrangement,
+    footing: Footing,
+    profile: SoilProfile,
+    section: PileSection,
+    springs: LateralSprings,
+    n_elements: int = 50,
+) -> BnwfLateralModel:
+    """杭・地盤の諸元から BNWF モデルを組み立てる。
+
+    節点ごとの pHU を :func:`core.capacity.lateral_limit.p_hu` で求める。
+    杭先端が地盤モデルの下端より深い場合は、最下層の値を延長して用いる。
+    """
+    depths = np.linspace(0.0, pile.length, n_elements + 1) + footing.embedment
+    xs = np.array(pile_x_coordinates(arrangement), dtype=float)
+    front_mask = xs >= xs.max() - 1.0e-9
+
+    def limits(front_row: bool) -> np.ndarray:
+        return np.array(
+            [
+                p_hu(
+                    profile,
+                    min(float(d), profile.total_depth),
+                    pile.diameter,
+                    arrangement.spacing_y,
+                    front_row=front_row,
+                )
+                for d in depths
+            ]
+        )
+
+    def make(front_row: bool) -> PileLateralModel:
+        return PileLateralModel(
+            ei=section.ei,
+            diameter=pile.diameter,
+            length=pile.length,
+            kh=springs.kh,
+            limits=limits(front_row),
+            n_elements=n_elements,
+        )
+
+    return BnwfLateralModel(
+        front_mask=front_mask, front=make(True), back=make(False)
+    )
 
 
 @dataclass(frozen=True)
@@ -785,6 +942,8 @@ def run_level2(
     allowable_displacement: float | None = None,
     allowable_rotation: float | None = ALLOWABLE_FOOTING_ROTATION,
     e0_method: E0Method = E0Method.N_VALUE,
+    use_bnwf: bool = True,
+    bnwf_elements: int = 100,
     max_factor: float = 3.0,
     steps: int = 120,
 ) -> Level2Result:
@@ -797,6 +956,14 @@ def run_level2(
 
     ``allowable_ductility`` を省略した場合は ``structure_type`` と
     ``rebar_grade`` から :func:`allowable_ductility_for` により決定する。
+
+    ``use_bnwf`` が真で、かつ全ての地層に KEP が入力されていれば、水平方向を
+    分布バネモデル(BNWF)で解き、pHU による地盤の塑性化を解析に反映する。
+    KEP が無い場合は従来どおり杭頭バネ K1〜K4 による弾性解析となる。
+
+    ``bnwf_elements`` は杭の分割数。既定の 100 分割では、弾性状態で
+    Chang の解析解に対し杭頭モーメントで 1% 程度の差になる(2次収束するので
+    分割を倍にすると誤差は約 1/4)。
     """
     section = pile_section(pile, fck=fck)
     bearing = compute_bearing_capacity(pile, profile, footing.embedment)
@@ -850,11 +1017,24 @@ def run_level2(
             "(軸方向支持力の上限到達のみで判定)。"
         )
 
+    has_k_ep = all(layer.k_ep is not None for layer in profile.layers)
     soil_reaction, soil_notes = _soil_reaction_diagnosis(
         pile, arrangement, footing, profile, section, springs, v_load, h_load, m_load,
-        kv, axial,
+        kv, axial, bnwf=use_bnwf and has_k_ep,
     )
     extra_notes.extend(soil_notes)
+
+    lateral: LateralModel | None = None
+    if use_bnwf and soil_reaction is not None:
+        lateral = build_bnwf_model(
+            pile, arrangement, footing, profile, section, springs,
+            n_elements=bnwf_elements,
+        )
+        extra_notes.append(
+            f"水平方向は分布バネモデル(BNWF、{bnwf_elements} 分割)で解析し、"
+            "地盤反力度が pHU に達した節点は頭打ちとして扱っている"
+            "(杭頭バネ K1〜K4 による弾性解析ではない)。"
+        )
 
     result = analyze_level2(
         arrangement,
@@ -862,6 +1042,7 @@ def run_level2(
         k1=springs.k1,
         k2=springs.k2,
         k4=springs.k4,
+        lateral=lateral,
         v_load=v_load,
         h_load=h_load,
         m_load=m_load,
@@ -896,6 +1077,7 @@ def _soil_reaction_diagnosis(
     m_load: float,
     kv: float,
     axial: AxialSpringModel,
+    bnwf: bool,
 ) -> tuple[SoilReactionCheck | None, list[str]]:
     """設計レベル2荷重時の地盤反力度を pHU と突き合わせる。
 
@@ -937,6 +1119,13 @@ def _soil_reaction_diagnosis(
             f"設計レベル2荷重時の地盤反力度は上限値 pHU 以下"
             f"(最大で pHU の {check.max_ratio * 100:.0f}%)。"
             "弾性の地盤バネのままでも大きな乖離はないと考えられる。"
+        )
+    elif bnwf:
+        top, bottom = check.exceeded_depth_range  # type: ignore[misc]
+        notes.append(
+            f"弾性解析であれば深さ {top:.1f}〜{bottom:.1f} m で地盤反力度が"
+            f"上限値 pHU を超えていた(最大で pHU の {check.max_ratio * 100:.0f}%)。"
+            "本解析は分布バネモデルでこの塑性化を考慮している。"
         )
     else:
         top, bottom = check.exceeded_depth_range  # type: ignore[misc]

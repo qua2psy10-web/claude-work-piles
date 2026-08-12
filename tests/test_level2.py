@@ -677,18 +677,31 @@ def test_diagnosis_runs_when_kep_is_given():
     assert result.soil_reaction.front_row is False
 
 
-def test_diagnosis_flags_exceedance_as_unsafe():
-    """pHU を極端に小さくすると、非安全側である旨が注記されること。"""
+def test_diagnosis_flags_exceedance_as_unsafe_in_elastic_mode():
+    """弾性解析を選んだ場合、pHU 超過は非安全側である旨が注記されること。"""
     from core.analysis.level2 import run_level2
 
     result = run_level2(
         STEEL, ARRANGEMENT, FOOTING, ground_with_kep(k_ep=0.01),
-        v_load=9000.0, h_load=3000.0, m_load=12000.0,
+        v_load=9000.0, h_load=3000.0, m_load=12000.0, use_bnwf=False,
     )
     assert result.soil_reaction is not None
     assert not result.soil_reaction.ok
     assert result.soil_reaction.exceeded_depth_range is not None
     assert any("非安全側" in n for n in result.notes)
+
+
+def test_bnwf_mode_does_not_call_the_exceedance_unsafe():
+    """分布バネモデルで解いた場合、超過は解析に反映済みなので非安全側ではない。"""
+    from core.analysis.level2 import run_level2
+
+    result = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, ground_with_kep(k_ep=0.01),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0, steps=20,
+    )
+    assert not result.soil_reaction.ok
+    assert not any("非安全側" in n for n in result.notes)
+    assert any("考慮している" in n for n in result.notes)
 
 
 def test_diagnosis_reports_ok_when_within_limit():
@@ -714,3 +727,129 @@ def test_diagnosis_depths_are_measured_from_ground_surface():
     )
     shallowest = min(p.depth for p in result.soil_reaction.points)
     assert shallowest == pytest.approx(FOOTING.embedment)
+
+
+# --- BNWF の統合 ------------------------------------------------------------
+
+
+def test_bnwf_with_huge_limits_converges_to_elastic_pushover():
+    """pHU を十分大きくすると、従来の K1〜K4 による解析に収束すること。
+
+    BNWF は離散化した数値解なので厳密一致はしない。分割を細かくすると
+    弾性解(Chang の式に基づく K1〜K4)との差が 2次で減ることを確認する。
+    """
+    from core.analysis.level2 import run_level2
+
+    kwargs = dict(
+        v_load=9000.0, h_load=3000.0, m_load=12000.0, max_factor=1.0, steps=10,
+    )
+    elastic = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, sample_ground(), use_bnwf=False, **kwargs
+    )
+    errors = []
+    for n in (100, 200, 400):
+        # KEP を極端に大きくすれば pHU は事実上無限大
+        bnwf = run_level2(
+            STEEL, ARRANGEMENT, FOOTING, ground_with_kep(k_ep=1.0e6),
+            bnwf_elements=n, **kwargs
+        )
+        assert bnwf.response.plastic_ground_nodes == 0
+        errors.append(
+            abs(
+                bnwf.response.reactions[0].moment
+                / elastic.response.reactions[0].moment
+                - 1.0
+            )
+        )
+        finest = bnwf
+
+    assert errors[0] < 0.02
+    for coarse, fine in zip(errors, errors[1:]):
+        assert fine < coarse / 3.0  # 2次収束
+    # 最も細かい分割では実用上一致する
+    assert finest.response.u == pytest.approx(elastic.response.u, rel=1e-4)
+    assert finest.response.theta == pytest.approx(elastic.response.theta, rel=1e-4)
+    assert finest.response.reactions[0].moment == pytest.approx(
+        elastic.response.reactions[0].moment, rel=1e-3
+    )
+
+
+def test_bnwf_is_used_when_kep_is_available():
+    from core.analysis.level2 import run_level2
+
+    result = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, ground_with_kep(),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0, steps=20,
+    )
+    assert any("分割)で解析し" in n for n in result.notes)
+    from core.analysis.level2 import LIMITATION_ELASTIC_GROUND
+
+    assert LIMITATION_ELASTIC_GROUND not in result.notes
+
+
+def test_falls_back_to_elastic_springs_without_kep():
+    from core.analysis.level2 import run_level2
+
+    result = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, sample_ground(),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0, steps=20,
+    )
+    from core.analysis.level2 import LIMITATION_ELASTIC_GROUND
+
+    assert LIMITATION_ELASTIC_GROUND in result.notes
+    assert not any("分割)で解析し" in n for n in result.notes)
+    assert all(s.plastic_ground_nodes == 0 for s in result.steps)
+
+
+def test_ground_plasticity_softens_the_foundation():
+    """地盤が塑性化すると、同じ水平力に対する変位が弾性解析より大きくなる。"""
+    from core.analysis.level2 import run_level2
+
+    kwargs = dict(
+        v_load=9000.0, h_load=3000.0, m_load=12000.0, max_factor=1.0, steps=20,
+    )
+    elastic = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, sample_ground(), use_bnwf=False, **kwargs
+    )
+    # 小さい KEP → pHU が小さく、浅部の地盤が塑性化する
+    plastic = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, ground_with_kep(k_ep=0.3), **kwargs
+    )
+    assert plastic.response.plastic_ground_nodes > 0
+    assert plastic.response.u > elastic.response.u
+
+
+def test_front_row_and_back_rows_differ_in_sand():
+    """砂質地盤では最前列以外の pHU が 1/2 なので、杭頭反力に差が出ること。"""
+    from core.analysis.level2 import run_level2
+
+    result = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, ground_with_kep(k_ep=0.3),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0, max_factor=1.0, steps=20,
+    )
+    assert result.response.plastic_ground_nodes > 0
+    shears = {round(r.shear, 6) for r in result.response.reactions}
+    assert len(shears) == 2  # 最前列と、それ以外
+    # 最前列(x が最大)のほうが大きな水平力を負担する
+    front = max(result.response.reactions, key=lambda r: r.x)
+    back = min(result.response.reactions, key=lambda r: r.x)
+    assert abs(front.shear) > abs(back.shear)
+
+
+def test_equilibrium_holds_with_bnwf():
+    from core.analysis.level2 import run_level2
+
+    result = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, ground_with_kep(k_ep=0.3),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0, max_factor=1.0, steps=20,
+    )
+    for step in result.steps:
+        assert sum(r.shear for r in step.reactions) == pytest.approx(
+            step.h, rel=1e-6, abs=1e-6
+        )
+        assert sum(r.axial for r in step.reactions) == pytest.approx(
+            9000.0, rel=1e-6
+        )
+        assert sum(
+            r.moment + r.x * r.axial for r in step.reactions
+        ) == pytest.approx(step.m, rel=1e-6, abs=1e-6)

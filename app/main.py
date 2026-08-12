@@ -410,6 +410,12 @@ def _render_level2(result) -> None:
     elif result.yielded:
         st.caption(f"許容塑性率 μa = {result.allowable_ductility:g}")
 
+    if result.response is not None and result.response.plastic_ground_nodes:
+        st.info(
+            f"水平地盤バネのうち {result.response.plastic_ground_nodes} 節点が"
+            "上限値 pHU に達している(分布バネモデルで塑性化を考慮)。"
+        )
+
     sr = result.soil_reaction
     if sr is not None:
         st.markdown("**水平地盤反力度と上限値 pHU の突合(診断)**")
@@ -1048,9 +1054,10 @@ def main() -> None:
         st.subheader("レベル2地震時の照査(道示Ⅴ(H24) 地震時保有水平耐力法)")
         st.caption(
             "水平力を漸増させるプッシュオーバー解析により、基礎の降伏点と"
-            "応答塑性率を求める。**杭の軸方向バネのみ**を非線形(バイリニア)"
-            "として扱う簡易解析であり、水平地盤反力・杭体の非線形は"
-            "考慮していない。制限事項は結果欄に表示される。"
+            "応答塑性率を求める。杭の軸方向バネはバイリニア。地層に **KEP**"
+            "(地震時受働土圧係数)を入力すると、水平方向も分布バネモデル"
+            "(BNWF)で解き、pHU による地盤の塑性化を考慮する。"
+            "杭体の曲げ剛性低下(M-φ)は未考慮。制限事項は結果欄に表示される。"
         )
         l2c1, l2c2, l2c3 = st.columns(3)
         with l2c1:
@@ -1066,6 +1073,14 @@ def main() -> None:
             l2_m = st.number_input(
                 "M (kN·m)", -1.0e7, 1.0e7, value=20000.0, step=500.0,
                 key=f"l2m_{nonce}",
+            )
+            bnwf_elements = st.number_input(
+                "杭の分割数(BNWF)", 20, 400, value=100, step=10,
+                key=f"l2n_{nonce}",
+                help=(
+                    "分布バネモデルの分割数。細かいほど精度が上がるが遅くなる。"
+                    "100 分割で杭頭モーメントの誤差は 1% 程度"
+                ),
             )
             l2_my = st.number_input(
                 "杭体の降伏曲げモーメント My (kN·m)", 0.0, 1.0e6,
@@ -1117,6 +1132,7 @@ def main() -> None:
                     allowable_ductility=l2_mua if l2_mua > 0 else None,
                     allowable_displacement=l2_da if l2_da > 0 else None,
                     e0_method=E0Method(e0_method),
+                    bnwf_elements=int(bnwf_elements),
                 )
             except (ValueError, NotImplementedError, RuntimeError) as exc:
                 st.error(f"計算エラー: {exc}")
