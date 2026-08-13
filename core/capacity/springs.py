@@ -1,9 +1,9 @@
-"""杭のバネ定数(道示Ⅳ(H24) 9.5、12.6)。
+"""杭のバネ定数(道示Ⅳ(H24) 9.6、12.6)。
 
 軸方向バネ定数(12.6.1):
     Kv = a・Ap・Ep / L,  a = slope・(L/D) + intercept(工法別)
 
-水平方向地盤反力係数(9.5.2):
+水平方向地盤反力係数(9.6):
     kH  = kH0・(BH/0.3)^(-3/4)
     kH0 = α・E0 / 0.3
     BH  = √(D/β),  β = ⁴√(kH・D / (4EI))
@@ -11,6 +11,11 @@ kH と β は相互に依存するため収束計算による。
 
 杭頭バネ定数(12.6.2、半無限長の杭 βLe ≧ 3):
     K1 = 4EIβ³, K2 = K3 = −2EIβ², K4 = 2EIβ
+
+.. note::
+   地盤反力係数の条項番号は、第29回に提供された資料の記載に従い **9.6** と
+   している(それ以前は 9.5.2 と書いていたが、これは照合していない記憶に
+   よるものだった)。式そのものは変わらない。
 """
 from __future__ import annotations
 
@@ -154,20 +159,32 @@ def lateral_springs(
     max_iter: int = 100,
     tol: float = 1e-8,
 ) -> LateralSprings:
-    """kH・β と杭頭バネ定数 K1〜K4 を収束計算で求める。
+    """kH・β と杭頭バネ定数 K1〜K4 を求める(道示Ⅳ 9.6)。
 
-    E0 の平均区間は 1/β 深さとし、β の更新に合わせて再評価する。
+    手順は次のとおり(提供資料の「計算手順」に従う)。
+
+    1. **常時(α = 1)** の条件で kH・β・BH が整合するまで反復計算する。
+       E0 の平均区間は 1/β 深さとし、β の更新に合わせて再評価する。
+    2. 得られた **BH を固定**し、当該荷重ケースの α(地震時は 2)を用いて
+       kH を算定する。液状化の低減 DE はこの段階で乗じる。
+    3. その kH から β を求め直し、K1〜K4 を算定する。
+
+    .. important::
+       **BH を求める kH は常時の値を用いる**。地震時の α で BH まで反復
+       し直すと BH が小さくなり、kH が約 7%、K1 が約 6% 過大になる
+       (地盤を硬く評価する = 非安全側)。第29回で修正した。
 
     ``e0_method`` は変形係数 E0 の推定方法。α の値がこれにより決まる
     (N値・平板載荷は常時1/地震時2、孔内水平載荷・室内試験は 4/8)。
 
     ``reduction`` を与えると、液状化に伴う土質定数の低減係数 DE を kH に
-    乗じる(道示Ⅴ 8.2.4)。DE は E0 と同じ区間(杭頭直下 1/β)で層厚加重
-    平均する。**低減は収束計算の内側で行う**ため、kH の低下が β の低下、
+    乗じる(道示Ⅴ 8.2.4)。DE は E0 と同じ区間(常時の 1/β)で層厚加重
+    平均する。**BH の決定には DE を効かせない**(BH は常時の条件で定める
+    ため)。一方 β は低減後の kH から求め直すので、kH の低下は β の低下、
     ひいては地中部最大曲げモーメント位置の深部移動として現れる。
 
     ``group_factor`` は群杭の補正係数 μ(:func:`group_pile_factor`)。
-    DE と同じく収束計算の内側で kH に乗じる。
+    μ は常時にも効くので、BH を定める反復計算の内側で乗じる。
     """
     if not 0.0 < group_factor <= 1.0:
         raise ValueError("群杭の補正係数 μ は 0 < μ ≦ 1 である必要があります")
@@ -176,27 +193,15 @@ def lateral_springs(
     d = pile.diameter
     ei = section.ei
 
+    # --- 手順1: 常時の条件で BH を定める(DE は効かせない)---------------
     beta = 1.0  # 初期値 (1/m)
-    kh = 0.0
-    bh = 0.0
-    e0 = 0.0
     iterations = 0
     for iterations in range(1, max_iter + 1):
         depth_range = min(1.0 / beta, profile.total_depth - embedment)
         e0 = mean_e0(profile, embedment, depth_range)
-        kh0 = alpha * e0 / 0.3
         bh = math.sqrt(d / beta)
-        de = _de_factor(reduction, embedment, depth_range)
-        if de <= 0.0:
-            raise ValueError(
-                f"杭頭直下 {depth_range:.2f} m の区間が全て液状化と判定され"
-                "(DE = 0)、水平地盤反力係数 kH が 0 になりました。"
-                "杭頭バネ K1〜K4 は弾性床上の梁(Chang の式)を前提とするため、"
-                "この状態では適用できません。分布バネモデル(BNWF)であれば"
-                "節点ごとに扱えるため、レベル2の照査を用いてください"
-            )
-        kh = kh0 * (bh / 0.3) ** (-0.75) * de * group_factor
-        beta_new = (kh * d / (4.0 * ei)) ** 0.25
+        kh_ref = (alpha_normal * e0 / 0.3) * (bh / 0.3) ** (-0.75) * group_factor
+        beta_new = (kh_ref * d / (4.0 * ei)) ** 0.25
         if abs(beta_new - beta) < tol * max(1.0, beta):
             beta = beta_new
             break
@@ -204,13 +209,25 @@ def lateral_springs(
     else:
         raise RuntimeError(f"kH の収束計算が {max_iter} 回で収束しませんでした")
 
-    # 収束後の値で kH・BH を再評価する
+    # 収束後の値で BH・E0 を確定する。以降この BH は変えない
     depth_range = min(1.0 / beta, profile.total_depth - embedment)
     e0 = mean_e0(profile, embedment, depth_range)
     bh = math.sqrt(d / beta)
+
+    # --- 手順2: 当該荷重ケースの α と DE で kH を求める -------------------
     de = _de_factor(reduction, embedment, depth_range)
+    if de <= 0.0:
+        raise ValueError(
+            f"杭頭直下 {depth_range:.2f} m の区間が全て液状化と判定され"
+            "(DE = 0)、水平地盤反力係数 kH が 0 になりました。"
+            "杭頭バネ K1〜K4 は弾性床上の梁(Chang の式)を前提とするため、"
+            "この状態では適用できません。分布バネモデル(BNWF)であれば"
+            "節点ごとに扱えるため、レベル2の照査を用いてください"
+        )
     kh = (alpha * e0 / 0.3) * (bh / 0.3) ** (-0.75) * de * group_factor
 
+    # --- 手順3: kH から β と K1〜K4 を求める ------------------------------
+    beta = (kh * d / (4.0 * ei)) ** 0.25
     k1 = 4.0 * ei * beta**3
     k2 = -2.0 * ei * beta**2
     k4 = 2.0 * ei * beta

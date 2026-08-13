@@ -224,3 +224,23 @@ def test_excessive_load_is_ng():
     assert not report.all_ok
     push = next(c for c in report.cases[0].checks if c.name == "押込み支持力")
     assert push.judgement == "NG"
+
+
+def test_seismic_kh_is_exactly_twice_the_permanent_value():
+    """BH は常時で決めて共通に使うので、地震時の kH はちょうど2倍になる。
+
+    以前は地震時の α で BH まで反復し直しており、kH が約 7%、K1 が
+    約 5% 過大(地盤を硬く評価 = 非安全側)だった。第29回で修正。
+    """
+    pile, arrangement, footing, profile = sample_inputs()
+    loads = [
+        FootingLoads(case=LoadCase.PERMANENT, v=9000.0, h=300.0, m=1500.0),
+        FootingLoads(case=LoadCase.LEVEL1_EQ, v=9000.0, h=300.0, m=1500.0),
+    ]
+    report = analyze(pile, arrangement, footing, profile, loads)
+    normal, seismic = (c.springs for c in report.cases)
+
+    assert seismic.bh == normal.bh
+    assert seismic.kh == pytest.approx(2.0 * normal.kh, rel=1e-12)
+    # 同じ荷重なら、地震時のほうが地盤が硬く変位が小さい
+    assert report.cases[1].result.u < report.cases[0].result.u

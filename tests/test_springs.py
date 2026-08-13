@@ -192,6 +192,11 @@ def test_storm_uses_normal_alpha():
 
 
 def test_seismic_alpha_doubles_kh():
+    """地震時の kH は常時の**ちょうど2倍**(BH が共通だから)。
+
+    「2倍より大きい」を許す書き方をしていたために、BH まで地震時の α で
+    反復し直す実装(kH が約 7% 過大)を見逃していた。第29回で修正。
+    """
     section = pile_section(CIP_PILE, fck=24)
     normal = lateral_springs(
         CIP_PILE, section, sand_profile(), 2.0, LoadCase.PERMANENT
@@ -199,10 +204,61 @@ def test_seismic_alpha_doubles_kh():
     seismic = lateral_springs(
         CIP_PILE, section, sand_profile(), 2.0, LoadCase.LEVEL1_EQ
     )
-    # α が 1→2 になるぶん kH が増え、杭は相対的に硬くなる
-    assert seismic.kh > normal.kh
+    assert seismic.kh == pytest.approx(2.0 * normal.kh, rel=1e-12)
+    # α が 1→2 になるぶん杭は相対的に硬くなる
     assert seismic.beta > normal.beta
     assert seismic.k1 > normal.k1
+
+
+def test_bh_is_determined_under_the_permanent_condition():
+    """換算載荷幅 BH は常時の kH で定め、地震時も同じ値を使う(道示Ⅳ 9.6)。"""
+    section = pile_section(CIP_PILE, fck=24)
+    profile = sand_profile()
+    normal = lateral_springs(CIP_PILE, section, profile, 2.0, LoadCase.PERMANENT)
+    cases = [
+        lateral_springs(CIP_PILE, section, profile, 2.0, case)
+        for case in (LoadCase.STORM, LoadCase.LEVEL1_EQ)
+    ]
+    for sp in cases:
+        assert sp.bh == normal.bh
+        assert sp.e0 == normal.e0
+        # kH は BH を固定したまま α に正比例する
+        assert sp.kh == pytest.approx(normal.kh * sp.alpha / normal.alpha, rel=1e-12)
+
+    # β は最終の kH から求め直すので、α の 4乗根の比になる
+    seismic = cases[-1]
+    assert seismic.beta == pytest.approx(normal.beta * 2.0**0.25, rel=1e-12)
+    assert seismic.beta == pytest.approx(
+        (seismic.kh * CIP_PILE.diameter / (4 * section.ei)) ** 0.25, rel=1e-12
+    )
+    # BH は β の**常時の値**から決まるので、この関係は成り立たない
+    assert seismic.bh != pytest.approx(math.sqrt(CIP_PILE.diameter / seismic.beta))
+
+
+def test_bh_ignores_the_liquefaction_reduction():
+    """DE は BH の決定には効かせない(BH は常時の条件で定めるため)。"""
+    from core.soil.liquefaction import SoilReduction, assess_liquefaction
+    from core.standards import GroundMotionType, GroundType
+    from tests.test_soil_reduction import liquefiable_profile
+
+    section = pile_section(CIP_PILE, fck=24)
+    profile = liquefiable_profile()
+    reduction = SoilReduction.from_assessment(
+        assess_liquefaction(profile, GroundType.TYPE_II),
+        GroundMotionType.LEVEL2_TYPE2,
+    )
+
+    plain = lateral_springs(CIP_PILE, section, profile, 2.0, LoadCase.LEVEL1_EQ)
+    reduced = lateral_springs(
+        CIP_PILE, section, profile, 2.0, LoadCase.LEVEL1_EQ, reduction=reduction
+    )
+    assert reduced.de < 1.0
+    # BH は変わらない
+    assert reduced.bh == plain.bh
+    # kH には DE がそのまま乗る
+    assert reduced.kh == pytest.approx(plain.kh * reduced.de, rel=1e-12)
+    # β は低減後の kH から求め直すので下がる(最大曲げ位置が深くなる向き)
+    assert reduced.beta < plain.beta
 
 
 def test_e0_from_n_value():

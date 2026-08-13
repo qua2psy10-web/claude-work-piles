@@ -348,7 +348,7 @@ def _case_section(case: CaseResult) -> str:
             [
                 ["変形係数 E0", f"{_num(sp.e0, 0)} kN/m²"],
                 ["換算係数 α", f"{sp.alpha:g}"],
-                ["換算載荷幅 BH", f"{sp.bh:.3f} m"],
+                ["換算載荷幅 BH", f"{sp.bh:.3f} m(常時の kH で決定)"],
                 ["水平方向地盤反力係数 kH", f"{_num(sp.kh, 0)} kN/m³"],
                 *(
                     [["液状化による低減係数 DE", f"{sp.de:.3f}"]]

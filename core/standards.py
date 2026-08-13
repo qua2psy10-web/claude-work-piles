@@ -383,6 +383,16 @@ class E0Method(str, Enum):
 #
 # 提供解説資料で確認済み。α は地震時の地盤ばねの初期剛性を評価するための
 # 係数であり、支持力や部材耐力・地盤反力度の上限値を2倍にするものではない。
+#
+# .. note::
+#    **レベル1・レベル2のいずれの地震時も α = 2 である**ことを第29回に提供
+#    された資料で確認した(「地震時(L1・L2): α = 2、同じ BH を用いて各層の
+#    kH を求める」)。これにより「レベル2用の kH が未照合で、レベル1の値を
+#    流用している」という長く残っていた懸念は解消した。
+#
+# .. important::
+#    **BH を求める kH は常時の値を用いる**(:func:`core.capacity.springs.
+#    lateral_springs`)。地震時の α で BH まで反復し直してはならない。
 ALPHA_KH: dict[E0Method, tuple[float, float]] = {
     E0Method.N_VALUE: (1.0, 2.0),
     E0Method.PLATE_LOADING: (1.0, 2.0),
