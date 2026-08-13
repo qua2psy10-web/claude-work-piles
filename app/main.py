@@ -683,6 +683,36 @@ def _render_stress_checks(case) -> None:
                 "構造細目上の最小帯鉄筋量は別途確認してください。"
             )
 
+    if case.steel_shear is not None:
+        ss = case.steel_shear
+        st.markdown("**杭体のせん断照査(鋼管断面)**")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("断面積 A", f"{ss.area * 1.0e6:,.0f} mm²")
+        c2.metric("τmax = 2V/A", f"{ss.tau_max:.2f} N/mm²")
+        c3.metric("許容せん断応力度", f"{ss.allowable:.1f} N/mm²")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "照査項目": c.name,
+                        "応力度 (N/mm²)": round(c.stress, 3),
+                        "許容値 (N/mm²)": round(c.allowable, 3),
+                        "比": round(c.ratio, 3),
+                        "判定": c.judgement,
+                    }
+                    for c in ss.checks
+                ]
+            ),
+            width="stretch",
+        )
+        st.caption(
+            f"照査断面: 深さ {ss.depth:.2f} m(せん断力最大)、"
+            f"V = {ss.shear:,.1f} kN。腐食代控除後の板厚 t = {ss.thickness:.1f} mm。"
+            f"平均せん断応力度 V/A = {ss.tau_mean:.3f} N/mm²(参考)"
+        )
+        for note in ss.notes:
+            st.caption(f"※ {note}")
+
     if case.pile_head is not None:
         st.markdown("**杭頭結合部の照査(道示Ⅳ 12.9.3)**")
         st.dataframe(

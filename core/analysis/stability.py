@@ -18,7 +18,12 @@ from core.models.soil import SoilProfile
 from core.soil.liquefaction import SoilReduction
 from core.section.checks import MaterialSpec, PileStressResult, check_section
 from core.section.detailing import RebarDetailingResult, check_rebar_detailing
-from core.section.shear import ShearResult, check_shear
+from core.section.shear import (
+    ShearResult,
+    SteelPipeShearResult,
+    check_shear,
+    check_steel_pipe_shear,
+)
 from core.section.pile_head import PileHeadResult, check_pile_head
 from core.standards import (
     ALLOWABLE_DISPLACEMENT_DIA_THRESHOLD,
@@ -27,6 +32,29 @@ from core.standards import (
     EC_SC_PILE_CONCRETE,
     E0Method,
 )
+
+
+_STEEL_TUBE_TYPES = (PileType.STEEL_PIPE, PileType.STEEL_PIPE_SOIL_CEMENT)
+
+
+def _check_max_steel_shear(
+    pile: PileSpec,
+    material: MaterialSpec,
+    case: LoadCase,
+    forces: SectionForceDistribution,
+) -> SteelPipeShearResult | None:
+    """鋼管断面のせん断照査。せん断力が最大となる断面で行う。"""
+    if pile.pile_type not in _STEEL_TUBE_TYPES:
+        return None
+    peak = forces.max_shear
+    return check_steel_pipe_shear(
+        pile,
+        material.steel_grade,
+        case,
+        depth=peak.depth,
+        shear=peak.shear,
+        corrosion_mm=material.corrosion_mm,
+    )
 
 
 def _check_max_shear(
@@ -99,7 +127,8 @@ class CaseResult:
     stress_head: PileStressResult | None = None  # 杭頭断面の応力度
     stress_max: PileStressResult | None = None  # 地中部最大曲げ断面の応力度
     pile_head: PileHeadResult | None = None  # 杭頭結合部
-    shear: ShearResult | None = None  # せん断照査(場所打ち杭のみ)
+    shear: ShearResult | None = None  # せん断照査(場所打ち杭)
+    steel_shear: SteelPipeShearResult | None = None  # 同(鋼管系)
 
     @property
     def all_ok(self) -> bool:
@@ -111,6 +140,8 @@ class CaseResult:
         if self.pile_head is not None and not self.pile_head.all_ok:
             return False
         if self.shear is not None and not self.shear.all_ok:
+            return False
+        if self.steel_shear is not None and not self.steel_shear.all_ok:
             return False
         return True
 
@@ -315,7 +346,7 @@ def analyze(
             length=pile.length,
         )
         stress_head = stress_max = head_result = None
-        shear_result = None
+        shear_result = steel_shear_result = None
         if material is not None:
             try:
                 stress_head = check_section(
@@ -327,6 +358,9 @@ def analyze(
                 )
                 shear_result = _check_max_shear(
                     pile, material, load.case, forces, critical.axial
+                )
+                steel_shear_result = _check_max_steel_shear(
+                    pile, material, load.case, forces
                 )
             except NotImplementedError as exc:
                 # 杭体の応力度照査が未実装の杭種でも、支持力・変位の照査は
@@ -358,6 +392,7 @@ def analyze(
                 stress_max=stress_max,
                 pile_head=head_result,
                 shear=shear_result,
+                steel_shear=steel_shear_result,
             )
         )
 

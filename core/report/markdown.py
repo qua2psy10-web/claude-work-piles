@@ -516,6 +516,38 @@ def _case_section(case: CaseResult) -> str:
                 "ただし構造細目上の最小帯鉄筋量は別途確認すること。\n"
             )
 
+    if case.steel_shear is not None:
+        ss = case.steel_shear
+        s.append("\n### 4.6 杭体のせん断照査(鋼管断面)\n")
+        s.append(
+            "\n薄肉円管の最大せん断応力度は材料力学から **τmax = 2V/A** で"
+            "求まる(τ = VQ/(I・2t) を薄肉近似したもの)。\n"
+            "許容せん断応力度は道示Ⅳ 表-4.4.1 の母材部の値による。\n\n"
+            f"- 照査断面: 深さ {ss.depth:.2f} m(せん断力最大)、"
+            f"V = {_num(ss.shear, 1)} kN\n"
+            f"- 腐食代控除後の板厚 t = {ss.thickness:.1f} mm、"
+            f"断面積 A = {_num(ss.area * 1.0e6, 0)} mm²\n"
+            f"- 平均せん断応力度 V/A = {ss.tau_mean:.3f} N/mm²(参考)\n"
+        )
+        s.append(
+            "\n"
+            + _table(
+                ["照査項目", "応力度 (N/mm²)", "許容値 (N/mm²)", "比", "判定"],
+                [
+                    [
+                        c.name,
+                        _num(c.stress, 3),
+                        _num(c.allowable, 3),
+                        f"{c.ratio:.3f}",
+                        c.judgement,
+                    ]
+                    for c in ss.checks
+                ],
+            )
+        )
+        for note in ss.notes:
+            s.append(f"\n> {note}\n")
+
     if case.pile_head is not None:
         s.append("\n### 4.7 杭頭結合部の照査(道示Ⅳ 12.9.3)\n")
         s.append(

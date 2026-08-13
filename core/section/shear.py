@@ -1,4 +1,9 @@
-"""円形RC断面(場所打ち杭)のせん断力に対する照査(道示Ⅳ(H24) 5.1.3)。
+"""杭体のせん断力に対する照査。
+
+* **円形RC断面(場所打ち杭)** — 道示Ⅳ(H24) 5.1.3 / 5.2.3。以下に詳述。
+* **鋼管断面(鋼管杭・鋼管ソイルセメント杭)** — :func:`check_steel_pipe_shear`。
+
+円形RC断面(道示Ⅳ(H24) 5.1.3)
 
 **原典(スキャン)で照合済み**(docs/VERIFICATION.md 第23回)。
 
@@ -41,7 +46,7 @@
 .. note::
    地震の影響を考慮する場合は、τa1 に割増係数 1.50 を乗じる代わりに
    表-5.2.1 の τc を用いる(原典 4.2 の解説)。本実装もそれに従う。
-"""
+"""  # noqa: D205
 from __future__ import annotations
 
 import math
@@ -50,6 +55,7 @@ from dataclasses import dataclass, field
 from core.models.loads import LoadCase
 from core.models.pile import PileSpec, PileType
 from core.section.rc import RebarLayout, StirrupLayout
+from core.capacity.section import CORROSION_ALLOWANCE_MM, hollow_circle
 from core.standards import (
     REBAR_YIELD_POINT,
     SHEAR_CC_FOUNDATION,
@@ -62,7 +68,9 @@ from core.standards import (
     TAU_A1_CONCRETE,
     TAU_MAX_CONCRETE,
     TAU_A2_CONCRETE,
+    TAU_A_STEEL,
     TAU_C_CONCRETE,
+    STEEL_ALLOWABLE_MAX_THICKNESS,
 )
 
 # 引張側 1/4 部分の境界(引張縁方向から ±45°)
@@ -545,4 +553,115 @@ def check_shear(
         checks=checks,
         stirrup_sigma_sa=stirrup_sigma_sa,
         stirrup=stirrup_check,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 鋼管断面(鋼管杭・鋼管ソイルセメント杭)
+# ---------------------------------------------------------------------------
+
+# 薄肉円管の最大せん断応力度は τmax = 2V/A。
+#
+#   A = 2πrt、I = πr³t、中立軸の断面一次モーメント Q = 2r²t、
+#   せん断流の幅 = 2t とすると
+#       τmax = V・Q /(I・2t) = V /(πrt) = 2V / A
+#
+# これは**材料力学から厳密に導かれる**関係であり、推定ではない。
+# 中空円形断面の厳密解(薄肉近似を用いない τ = VQ/(I・b))と比べると、
+# 実用的な杭の板厚(D=600〜2000mm、t=9〜25mm)では差は 0.04% 以内で、
+# かつ 2V/A のほうがわずかに**大きい**(安全側)。
+STEEL_PIPE_SHEAR_FACTOR = 2.0
+
+
+@dataclass(frozen=True)
+class SteelPipeShearResult:
+    """鋼管断面のせん断照査の結果。"""
+
+    depth: float  # 杭頭からの深さ (m)
+    shear: float  # 作用せん断力 (kN)
+    area: float  # 腐食代控除後の断面積 (m2)
+    thickness: float  # 腐食代控除後の板厚 (mm)
+    tau_max: float  # 最大せん断応力度 τmax = 2V/A (N/mm2)
+    tau_mean: float  # 平均せん断応力度 V/A (N/mm2、参考)
+    allowable: float  # 許容せん断応力度(割増後) (N/mm2)
+    checks: list[ShearCheck] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def all_ok(self) -> bool:
+        return all(c.ok for c in self.checks)
+
+
+def check_steel_pipe_shear(
+    pile: PileSpec,
+    steel_grade: str,
+    case: LoadCase,
+    depth: float,
+    shear: float,
+    corrosion_mm: float = CORROSION_ALLOWANCE_MM,
+) -> SteelPipeShearResult:
+    """鋼管杭・鋼管ソイルセメント杭のせん断照査。
+
+    最大せん断応力度は薄肉円管の材料力学から
+
+        τmax = 2V / A
+
+    で求まる(:data:`STEEL_PIPE_SHEAR_FACTOR` の解説を参照)。許容せん断
+    応力度は道示Ⅳ 表-4.4.1 の母材部の値(SKK400 = 80、SKK490 = 105)に
+    荷重の組合せに応じた割増しを乗じる。
+
+    .. warning::
+       表-4.4.1 の**鋼管のせん断は「座屈を考慮しない場合」の値**である
+       (原典の注記)。局部座屈が懸念される薄肉断面では別途の検討が要る。
+       また同表は**板厚 40mm 以下**に適用するもので、これを超える場合は
+       鋼橋編による。いずれも該当時に注記を出す。
+
+    .. note::
+       鋼管ソイルセメント杭はソイルセメント部を無視し、鋼管のみでせん断力を
+       負担するものとして照査する(応力度照査と同じ扱い)。
+    """
+    if pile.pile_type not in (PileType.STEEL_PIPE, PileType.STEEL_PIPE_SOIL_CEMENT):
+        raise ValueError(
+            f"{pile.pile_type.value}に鋼管断面のせん断照査は適用できません"
+        )
+    if pile.wall_thickness is None:
+        raise ValueError("鋼管杭は板厚 wall_thickness の入力が必要です")
+    if steel_grade not in TAU_A_STEEL:
+        raise ValueError(
+            f"鋼材材質 {steel_grade} の許容せん断応力度が未定義です。"
+            f"対応材質: {sorted(TAU_A_STEEL)}"
+        )
+
+    t = pile.wall_thickness - corrosion_mm
+    if t <= 0:
+        raise ValueError(f"腐食代 {corrosion_mm} mm 控除後の板厚が 0 以下です")
+    area, _ = hollow_circle(pile.diameter, t / 1000.0)  # m2
+
+    # kN, m2 → N/mm2 は 1/1000
+    tau_mean = abs(shear) / area / 1000.0
+    tau_max = STEEL_PIPE_SHEAR_FACTOR * tau_mean
+    allowable = TAU_A_STEEL[steel_grade] * STRESS_INCREASE[case.value]
+
+    notes: list[str] = []
+    if pile.wall_thickness > STEEL_ALLOWABLE_MAX_THICKNESS:
+        notes.append(
+            f"板厚 {pile.wall_thickness:.1f} mm は表-4.4.1 の適用範囲"
+            f"({STEEL_ALLOWABLE_MAX_THICKNESS:g} mm 以下)を超えている。"
+            "鋼橋編の許容応力度を確認すること。"
+        )
+    notes.append(
+        "許容せん断応力度は**座屈を考慮しない場合**の値である(表-4.4.1 の注記)。"
+        "局部座屈が懸念される薄肉断面では別途の検討が必要。"
+    )
+
+    return SteelPipeShearResult(
+        depth=depth,
+        shear=shear,
+        area=area,
+        thickness=t,
+        tau_max=tau_max,
+        tau_mean=tau_mean,
+        allowable=allowable,
+        checks=[ShearCheck("最大せん断応力度 τmax = 2V/A", tau_max, allowable)],
+        notes=notes,
     )

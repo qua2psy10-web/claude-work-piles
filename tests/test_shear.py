@@ -19,7 +19,12 @@ from core.section.shear import (
     tensile_rebar_ratio,
     tension_quarter_positions,
 )
-from core.standards import TAU_A1_CONCRETE, TAU_A2_CONCRETE, TAU_C_CONCRETE
+from core.standards import (
+    SIGMA_A_STEEL,
+    TAU_A1_CONCRETE,
+    TAU_A2_CONCRETE,
+    TAU_C_CONCRETE,
+)
 
 CIP = PileSpec(
     pile_type=PileType.CAST_IN_PLACE,
@@ -708,3 +713,173 @@ def test_level2_checks_both_failure_modes():
     # 同じ応答せん断力を2つの耐力と比べている
     shear_checks = [c for c in result.checks if "破壊" in c.name]
     assert len({round(c.demand, 6) for c in shear_checks}) == 1
+
+
+# --- 鋼管断面のせん断照査 ----------------------------------------------------
+
+from core.section.shear import (  # noqa: E402
+    STEEL_PIPE_SHEAR_FACTOR,
+    check_steel_pipe_shear,
+)
+from core.standards import STRESS_INCREASE, TAU_A_STEEL  # noqa: E402
+
+STEEL = PileSpec(
+    pile_type=PileType.STEEL_PIPE,
+    method=ConstructionMethod.DRIVEN,
+    diameter=1.0,
+    length=20.0,
+    wall_thickness=12.0,
+)
+
+
+def test_steel_pipe_shear_is_two_v_over_a():
+    """薄肉円管の最大せん断応力度 τmax = 2V/A。腐食代1mmを控除する。"""
+    r = check_steel_pipe_shear(STEEL, "SKK400", LoadCase.PERMANENT, 0.0, 1000.0)
+    t = 0.011
+    inner = 1.0 - 2 * t
+    area = math.pi * (1.0**2 - inner**2) / 4.0
+
+    assert r.thickness == pytest.approx(11.0)
+    assert r.area == pytest.approx(area)
+    assert r.tau_mean == pytest.approx(1000.0 / area / 1000.0)
+    assert r.tau_max == pytest.approx(STEEL_PIPE_SHEAR_FACTOR * r.tau_mean)
+    assert STEEL_PIPE_SHEAR_FACTOR == 2.0
+
+
+def test_steel_pipe_shear_matches_the_exact_hollow_circle_solution():
+    """2V/A は中空円形断面の厳密解 VQ/(I・b) と実用範囲でほぼ一致し、安全側。
+
+    厳密解: I = π(ro⁴−ri⁴)/4、中立軸の断面一次モーメント Q = 2(ro³−ri³)/3、
+    せん断流の幅 b = 2(ro−ri)。
+    """
+    for diameter, wall in ((1.0, 12.0), (0.8, 10.0), (2.0, 17.0)):
+        pile = STEEL.model_copy(
+            update={"diameter": diameter, "wall_thickness": wall}
+        )
+        r = check_steel_pipe_shear(pile, "SKK400", LoadCase.PERMANENT, 0.0, 1000.0)
+        ro = diameter / 2.0
+        ri = ro - r.thickness / 1000.0
+        inertia = math.pi * (ro**4 - ri**4) / 4.0
+        q = 2.0 / 3.0 * (ro**3 - ri**3)
+        exact = 1000.0 * q / (inertia * 2.0 * (ro - ri)) / 1000.0
+        # 差は 0.1% 以内、かつ 2V/A のほうが大きい(安全側)
+        assert r.tau_max == pytest.approx(exact, rel=1.0e-3)
+        assert r.tau_max >= exact
+
+
+def test_steel_pipe_shear_allowable_by_grade_and_case():
+    """許容せん断応力度は表-4.4.1(SKK400 = 80、SKK490 = 105)× 割増。"""
+    for grade in ("SKK400", "SKK490"):
+        for case in LoadCase:
+            r = check_steel_pipe_shear(STEEL, grade, case, 0.0, 500.0)
+            assert r.allowable == pytest.approx(
+                TAU_A_STEEL[grade] * STRESS_INCREASE[case.value]
+            )
+    # 引張の許容応力度(140/185)より小さい
+    for grade in ("SKK400", "SKK490"):
+        assert TAU_A_STEEL[grade] < SIGMA_A_STEEL[grade]
+
+
+def test_steel_pipe_shear_judgement():
+    ok = check_steel_pipe_shear(STEEL, "SKK400", LoadCase.LEVEL1_EQ, 0.0, 1000.0)
+    ng = check_steel_pipe_shear(STEEL, "SKK400", LoadCase.LEVEL1_EQ, 0.0, 3000.0)
+    assert ok.all_ok and not ng.all_ok
+    assert ng.tau_max > ng.allowable
+
+
+def test_steel_pipe_shear_always_notes_the_buckling_assumption():
+    """表-4.4.1 の鋼管のせん断は座屈を考慮しない値である旨を必ず出す。"""
+    r = check_steel_pipe_shear(STEEL, "SKK400", LoadCase.PERMANENT, 0.0, 500.0)
+    assert any("座屈を考慮しない" in n for n in r.notes)
+
+
+def test_thick_wall_is_flagged_as_outside_the_table():
+    """板厚 40mm 超は表-4.4.1 の適用範囲外である旨を注記すること。"""
+    thick = STEEL.model_copy(update={"wall_thickness": 45.0})
+    r = check_steel_pipe_shear(thick, "SKK400", LoadCase.PERMANENT, 0.0, 500.0)
+    assert any("適用範囲" in n for n in r.notes)
+
+
+def test_steel_pipe_shear_rejects_other_pile_types():
+    with pytest.raises(ValueError, match="適用できません"):
+        check_steel_pipe_shear(CIP, "SKK400", LoadCase.PERMANENT, 0.0, 500.0)
+    with pytest.raises(ValueError, match="板厚"):
+        check_steel_pipe_shear(
+            STEEL.model_copy(update={"wall_thickness": None}),
+            "SKK400", LoadCase.PERMANENT, 0.0, 500.0,
+        )
+    with pytest.raises(ValueError, match="許容せん断応力度"):
+        check_steel_pipe_shear(STEEL, "SS400", LoadCase.PERMANENT, 0.0, 500.0)
+
+
+def test_stability_runs_the_steel_shear_check():
+    """鋼管杭の安定計算がせん断照査を行い、RC 側は None になること。"""
+    from core.analysis.stability import analyze
+    from core.models import (
+        Footing,
+        FootingLoads,
+        PileArrangement,
+        SoilLayer,
+        SoilProfile,
+        SoilType,
+    )
+    from core.section.checks import MaterialSpec
+
+    profile = SoilProfile(
+        layers=[
+            SoilLayer(name="As", soil_type=SoilType.SAND, thickness=10.0,
+                      n_value=15.0, gamma_t=18.0, gamma_sat=19.0),
+            SoilLayer(name="Ds", soil_type=SoilType.SAND, thickness=25.0,
+                      n_value=45.0, gamma_t=19.0, gamma_sat=20.0),
+        ],
+        gwl=2.0,
+    )
+    report = analyze(
+        STEEL,
+        PileArrangement(nx=3, ny=3, spacing_x=2.5, spacing_y=2.5),
+        Footing(width_x=8.0, width_y=8.0, height=1.5, embedment=2.0),
+        profile,
+        [FootingLoads(case=LoadCase.LEVEL1_EQ, v=9000.0, h=3000.0, m=8000.0)],
+        fck=24,
+        material=MaterialSpec(fck=24, rebar=REBAR),
+    )
+    case = report.cases[0]
+    assert case.steel_shear is not None
+    assert case.shear is None  # RC 用のせん断照査は走らない
+    # 照査断面はせん断力最大点
+    assert case.steel_shear.depth == pytest.approx(case.forces.max_shear.depth)
+    assert case.steel_shear.shear == pytest.approx(case.forces.max_shear.shear)
+
+
+def test_cast_in_place_has_no_steel_shear_result():
+    from core.analysis.stability import analyze
+    from core.models import (
+        Footing,
+        FootingLoads,
+        PileArrangement,
+        SoilLayer,
+        SoilProfile,
+        SoilType,
+    )
+    from core.section.checks import MaterialSpec
+
+    profile = SoilProfile(
+        layers=[
+            SoilLayer(name="As", soil_type=SoilType.SAND, thickness=10.0,
+                      n_value=15.0, gamma_t=18.0, gamma_sat=19.0),
+            SoilLayer(name="Ds", soil_type=SoilType.SAND, thickness=25.0,
+                      n_value=45.0, gamma_t=19.0, gamma_sat=20.0),
+        ],
+        gwl=2.0,
+    )
+    report = analyze(
+        CIP,
+        PileArrangement(nx=3, ny=3, spacing_x=2.5, spacing_y=2.5),
+        Footing(width_x=8.0, width_y=8.0, height=1.5, embedment=2.0),
+        profile,
+        [FootingLoads(case=LoadCase.LEVEL1_EQ, v=9000.0, h=3000.0, m=8000.0)],
+        fck=24,
+        material=MaterialSpec(fck=24, rebar=REBAR),
+    )
+    assert report.cases[0].steel_shear is None
+    assert report.cases[0].shear is not None
