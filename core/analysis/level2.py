@@ -50,6 +50,7 @@ from core.capacity.springs import (
     LateralSprings,
     PileSection,
     axial_spring,
+    group_pile_factor,
     lateral_springs,
 )
 from core.models.loads import LoadCase
@@ -62,6 +63,7 @@ from core.standards import (
     ALLOWABLE_DUCTILITY_CIP_HIGH_GRADE,
     ALLOWABLE_DUCTILITY_PILE,
     ALLOWABLE_FOOTING_ROTATION,
+    GROUP_PILE_SPACING_RATIO,
     HIGH_GRADE_REBAR_FOR_DUCTILITY,
     SIGMA_Y_STEEL,
     E0Method,
@@ -93,11 +95,17 @@ LIMITATIONS: tuple[str, ...] = (
     "いずれの杭種でも、塑性ヒンジ後の曲げ剛性低下は追跡していない。",
     "押込み支持力の上限値 Pu・引抜き抵抗力の上限値 Pt は、許容応力度設計法の"
     "式で安全率を 1 とした値として算定している(道示Ⅴ の規定との照合が未了)。",
-    "群杭効果(支持力のブロック破壊)と側方流動は考慮していない。"
+    "群杭効果のうち、杭中心間隔が 2.5D 未満のときの水平方向地盤反力係数の"
+    "補正係数 μ は実装したが(分布バネモデルでは適用しない)、"
+    "**仮想ケーソン基礎とみなした押込み支持力の上限**と支持力のブロック破壊、"
+    "および側方流動は考慮していない。"
     "液状化に伴う土質定数の低減 DE は、液状化判定の結果を渡した場合にのみ"
     "考慮する。",
-    "水平方向地盤反力係数 kH はレベル1地震時の値(α = 2)を用いている。"
-    "レベル2用の地盤反力係数の規定は未照合。",
+    "**水平方向地盤反力係数** kH はレベル1地震時の値(α = 2)を用いている。"
+    "レベル2用の地盤反力係数の規定は未照合。"
+    "(なお道示Ⅴ の**設計水平震度** kH(khc・khg)とは別量である。"
+    "こちらは慣性力・土圧の算定に用いるもので、本ソフトはレベル2の荷重を"
+    "利用者から与えられる前提のため算定していない。)",
 )
 
 
@@ -231,6 +239,8 @@ class Level2Result:
     # 入力した場合のみ算定する。
     shear_capacity: "ShearCapacity | None" = None
     response_shear: float | None = None  # 設計レベル2荷重時の杭頭せん断力 (kN)
+    # kH に乗じた群杭の補正係数 μ。分布バネモデルでは 1.0(補正しない)
+    group_factor: float = 1.0
 
     @property
     def yielded(self) -> bool:
@@ -1029,13 +1039,31 @@ def run_level2(
     use_bnwf_actual = use_bnwf and has_k_ep
     # 分布バネモデルでは DE を**節点ごとに**乗じるので、ここでは低減前の
     # kH を求める。弾性解析に落ちる場合のみ、平均した DE を kH に織り込む。
+    # 群杭の補正係数 μ は**線形の地盤反力係数に対するもの**であり、基礎地盤の
+    # 非線形性を考慮する場合には適用しないとされている。分布バネモデルは
+    # まさにその非線形モデルなので、BNWF を使う経路では μ を乗じない。
+    group_factor = group_pile_factor(
+        min(arrangement.spacing_x, arrangement.spacing_y), pile.diameter
+    )
     springs = lateral_springs(
         pile, section, profile, footing.embedment, LoadCase.LEVEL1_EQ,
         e0_method=e0_method,
         reduction=None if use_bnwf_actual else reduction,
+        group_factor=1.0 if use_bnwf_actual else group_factor,
     )
 
     extra_notes: list[str] = []
+    if group_factor < 1.0:
+        extra_notes.append(
+            f"杭中心間隔が {GROUP_PILE_SPACING_RATIO:g}D 未満のため群杭の"
+            f"補正係数 μ = {group_factor:.3f} が求まるが、"
+            + (
+                "**分布バネモデル(基礎地盤の非線形性を考慮する場合)では "
+                "μ による補正を考慮しない**とされているため、乗じていない。"
+                if use_bnwf_actual
+                else "杭頭バネによる弾性解析のため、kH に乗じている。"
+            )
+        )
     if reduction is not None and reduction.has_reduction:
         span = reduction.reduced_depth_range()
         detail = (
@@ -1155,6 +1183,7 @@ def run_level2(
         notes=extra_notes + shear_notes + result.notes,
         shear_capacity=capacity,
         response_shear=response_shear,
+        group_factor=springs.group_factor,
     )
 
 

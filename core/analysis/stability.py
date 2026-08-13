@@ -11,7 +11,13 @@ from core.capacity.negative_friction import (
     compute_negative_friction,
 )
 from core.capacity.section import pile_section
-from core.capacity.springs import LateralSprings, PileSection, axial_spring, lateral_springs
+from core.capacity.springs import (
+    LateralSprings,
+    PileSection,
+    axial_spring,
+    group_pile_factor,
+    lateral_springs,
+)
 from core.models.loads import FootingLoads, LoadCase
 from core.models.pile import Footing, PileArrangement, PileSpec, PileType
 from core.models.soil import SoilProfile
@@ -31,6 +37,8 @@ from core.standards import (
     ALLOWABLE_DISPLACEMENT_MM,
     ALLOWABLE_DISPLACEMENT_RATIO,
     EC_SC_PILE_CONCRETE,
+    GROUP_PILE_KH_COEF,
+    GROUP_PILE_SPACING_RATIO,
     E0Method,
 )
 
@@ -237,8 +245,25 @@ def analyze(
         )
     kv = axial_spring(pile, section)
     delta_a = allowable_displacement(pile.diameter)
+    # 群杭の補正は、方向により間隔が異なる場合は狭いほうで決める(安全側)
+    min_spacing = min(arrangement.spacing_x, arrangement.spacing_y)
+    group_factor = group_pile_factor(min_spacing, pile.diameter)
 
     notes: list[str] = [f"⚠ {w.message}({w.field})" for w in warnings]
+    if group_factor < 1.0:
+        notes.append(
+            f"杭中心間隔 {min_spacing:.2f} m が "
+            f"{GROUP_PILE_SPACING_RATIO:g}D = "
+            f"{GROUP_PILE_SPACING_RATIO * pile.diameter:.2f} m 未満のため、"
+            "群杭としての影響を考慮し、水平方向地盤反力係数 kH に補正係数 "
+            f"μ = 1 − {GROUP_PILE_KH_COEF} × ({GROUP_PILE_SPACING_RATIO:g} − L/D) "
+            f"= {group_factor:.3f} を乗じている。"
+            "**群杭影響のもう一方である「仮想ケーソン基礎とみなした押込み"
+            "支持力の上限」は未実装**であり、押込み支持力は単杭の総和のまま"
+            "である(非安全側に残る)。また μ の式は**令和7年改訂版の"
+            "道示Ⅳ を典拠とする提供資料**によるもので、H24版の条文そのものは"
+            "確認していない。"
+        )
     if pile.pile_type in (PileType.PHC, PileType.SC):
         if pile.concrete_young is not None:
             notes.append(
@@ -313,6 +338,7 @@ def analyze(
         springs = lateral_springs(
             pile, section, profile, footing.embedment, load.case,
             e0_method=e0_method, reduction=case_reduction,
+            group_factor=group_factor,
         )
         result = solve_stability(
             arrangement,

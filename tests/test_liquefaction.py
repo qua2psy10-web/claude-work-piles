@@ -128,3 +128,41 @@ def test_assess_overall():
     assert assessment.liquefiable_type2
     # 1mピッチで10スライス
     assert len(assessment.slices) == 10
+
+
+# --- 地域別補正係数 cz -------------------------------------------------------
+
+
+def test_region_a1_raises_the_seismic_load_and_lowers_fl():
+    """A1・B1 地域の cIz = 1.20。1.0 で頭打ちにすると非安全側になる。
+
+    第28回まで入力を 1.0 で制限しており、これらの地域を表現できなかった。
+    """
+    profile = sand_profile()
+    base = evaluate_at(profile, 5.0, GroundType.TYPE_II, cz_type1=1.00)
+    a1 = evaluate_at(profile, 5.0, GroundType.TYPE_II, cz_type1=1.20)
+
+    # L(せん断応力比)は cIz に正比例する
+    assert a1.l_type1 == pytest.approx(1.20 * base.l_type1)
+    # R は地盤の強度なので変わらない
+    assert a1.r_type1 == pytest.approx(base.r_type1)
+    # したがって FL は 1/1.2 倍に下がる = 液状化しやすい判定になる
+    assert a1.fl_type1 == pytest.approx(base.fl_type1 / 1.20)
+    assert a1.fl_type1 < base.fl_type1
+    # タイプII は A1 地域でも 1.00 なので影響を受けない
+    assert a1.fl_type2 == pytest.approx(base.fl_type2)
+
+
+def test_region_table_is_usable_end_to_end():
+    """地域区分から cz を引いて判定できること。C 地域が最も緩い。"""
+    from core.standards import REGION_CZ
+
+    fls = {}
+    for zone, (cz1, cz2) in REGION_CZ.items():
+        result = evaluate_at(
+            sand_profile(), 5.0, GroundType.TYPE_II,
+            cz_type1=cz1, cz_type2=cz2,
+        )
+        fls[zone] = result.fl_type1
+    # cIz が大きい地域ほど FL は小さい
+    assert fls["A1"] == fls["B1"] < fls["A2"] == fls["B2"] < fls["C"]

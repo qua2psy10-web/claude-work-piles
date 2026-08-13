@@ -134,15 +134,22 @@ def test_pile_exactly_flush_with_the_footing_edge_is_accepted():
 # --- 杭配置(警告) --------------------------------------------------------
 
 
-def test_close_spacing_is_a_warning_that_says_it_is_unverified():
-    """2.5D 未満は警告。原典未照合であることを明示していること。"""
+def test_close_spacing_warns_about_group_pile_effects():
+    """2.5D 未満は「群杭影響を考慮する境界」であって最小寸法ではない。
+
+    第27回では「最小値の規定」と誤って説明していた(第28回で訂正)。
+    """
     arrangement = PileArrangement(nx=3, ny=3, spacing_x=2.0, spacing_y=2.5)
     issues = issues_for(arrangement=arrangement)
     assert len(issues) == 1
     (issue,) = issues
     assert issue.severity is Severity.WARNING
     assert issue.field == "杭中心間隔(橋軸方向)"
-    assert "原典未照合" in issue.remedy
+    assert "群杭" in issue.message
+    assert "最小" not in issue.message
+    # 実装した分と、していない分の両方を伝えること
+    assert "μ" in issue.remedy
+    assert "未実装" in issue.remedy
 
 
 def test_spacing_at_the_threshold_is_clean():
@@ -337,3 +344,79 @@ def test_analyze_validates_the_section_when_materials_are_given():
             pile, arrangement, footing, profile, sample_loads(), material=material
         )
     assert {i.field for i in exc.value.issues} == {"かぶり"}
+
+
+# --- 群杭の補正係数 μ ------------------------------------------------------
+
+
+def wide_footing():
+    return Footing(width_x=12.0, width_y=12.0, height=1.5, embedment=2.0)
+
+
+def test_group_correction_lowers_kh_and_raises_displacement():
+    """L < 2.5D では kH に μ が効き、変位が大きく出る(安全側)。"""
+    pile, _, _, profile = sample_inputs()
+    footing = wide_footing()
+    reports = {}
+    for spacing in (2.5, 2.0):
+        arrangement = PileArrangement(
+            nx=3, ny=3, spacing_x=spacing, spacing_y=spacing
+        )
+        reports[spacing] = analyze(
+            pile, arrangement, footing, profile, sample_loads()
+        )
+
+    base, tight = reports[2.5], reports[2.0]
+    assert base.cases[0].springs.group_factor == 1.0
+    assert tight.cases[0].springs.group_factor == pytest.approx(0.90)
+
+    # μ は**収束計算の内側**で kH に乗るので、kH は μ 倍ちょうどにはならない。
+    # kH = C・D^(-3/8)・β^(3/8)・μ と β = (kH・D/4EI)^(1/4) を連立すると
+    # kH ∝ μ^(32/29) となる。この指数を固定して、μ を収束後に外から
+    # 掛けるだけの実装に戻っていないことを担保する。
+    ratio = tight.cases[0].springs.kh / base.cases[0].springs.kh
+    assert ratio == pytest.approx(0.90 ** (32 / 29), rel=1e-6)
+    assert ratio < 0.90  # 単純に μ 倍するより下がる
+
+    # kH が下がるので変位は増える
+    assert tight.cases[0].result.u > base.cases[0].result.u
+    # β も下がる(地中部最大曲げモーメントの位置が深くなる向き)
+    assert tight.cases[0].springs.beta < base.cases[0].springs.beta
+
+
+def test_group_correction_uses_the_narrower_direction():
+    """方向で間隔が違えば、狭いほうで μ を決める(安全側)。"""
+    pile, _, _, profile = sample_inputs()
+    footing = wide_footing()
+    mixed = analyze(
+        pile,
+        PileArrangement(nx=3, ny=3, spacing_x=2.0, spacing_y=4.0),
+        footing, profile, sample_loads(),
+    )
+    both_narrow = analyze(
+        pile,
+        PileArrangement(nx=3, ny=3, spacing_x=2.0, spacing_y=2.0),
+        footing, profile, sample_loads(),
+    )
+    assert mixed.cases[0].springs.group_factor == pytest.approx(
+        both_narrow.cases[0].springs.group_factor
+    )
+
+
+def test_group_correction_is_explained_including_what_is_missing():
+    """μ を乗じたことと、支持力側が未実装であることの両方を注記する。"""
+    pile, _, _, profile = sample_inputs()
+    arrangement = PileArrangement(nx=3, ny=3, spacing_x=2.0, spacing_y=2.0)
+    report = analyze(pile, arrangement, wide_footing(), profile, sample_loads())
+    note = next(n for n in report.notes if "補正係数" in n)
+    assert "μ" in note
+    assert "仮想ケーソン" in note and "未実装" in note
+    # H24 の条文そのものではないことも伝える
+    assert "令和7年改訂版" in note
+
+
+def test_no_group_note_at_or_above_the_threshold():
+    pile, arrangement, footing, profile = sample_inputs()
+    report = analyze(pile, arrangement, footing, profile, sample_loads())
+    assert report.cases[0].springs.group_factor == 1.0
+    assert report.notes == []

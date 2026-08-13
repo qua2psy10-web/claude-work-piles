@@ -355,6 +355,11 @@ def _case_section(case: CaseResult) -> str:
                     if sp.de < 1.0
                     else []
                 ),
+                *(
+                    [["群杭の補正係数 μ", f"{sp.group_factor:.3f}"]]
+                    if sp.is_group_corrected
+                    else []
+                ),
                 ["特性値 β", f"{sp.beta:.4f} 1/m"],
                 ["βL", f"{sp.beta_le:.2f}" + ("(半無限長)" if sp.is_semi_infinite else "(**適用範囲外**)")],
                 ["軸方向バネ Kv", f"{_num(case.kv, 0)} kN/m"],

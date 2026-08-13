@@ -30,7 +30,7 @@ from core.models.loads import FootingLoads
 from core.models.pile import Footing, PileArrangement, PileSpec, PileType
 from core.models.soil import SoilProfile
 from core.section.checks import MaterialSpec
-from core.standards import MIN_PILE_SPACING_RATIO
+from core.standards import GROUP_PILE_SPACING_RATIO
 
 
 class Severity(str, Enum):
@@ -94,16 +94,17 @@ def _check_arrangement(
                     f"中心間隔を杭径より大きくしてください",
                 )
             )
-        elif spacing < MIN_PILE_SPACING_RATIO * d:
+        elif spacing < GROUP_PILE_SPACING_RATIO * d:
             issues.append(
                 ValidationIssue(
                     Severity.WARNING,
                     f"杭中心間隔({label})",
                     f"中心間隔 {spacing:.2f} m が杭径の "
-                    f"{spacing / d:.2f} 倍しかありません",
-                    f"道示Ⅳ は杭中心間隔の最小値を規定しています"
-                    f"(一般に {MIN_PILE_SPACING_RATIO:g}D 程度とされますが"
-                    "**本ソフトでは原典未照合**)。適用する規定を確認してください",
+                    f"{spacing / d:.2f} 倍({GROUP_PILE_SPACING_RATIO:g}D 未満)"
+                    "のため、群杭としての影響を考慮する必要があります",
+                    "水平方向地盤反力係数 kH には補正係数 μ を乗じています。"
+                    "一方、**仮想ケーソン基礎とみなした押込み支持力の上限は"
+                    "未実装**のため、押込み支持力は別途確認してください",
                 )
             )
 

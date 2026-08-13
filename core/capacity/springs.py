@@ -27,6 +27,8 @@ if TYPE_CHECKING:  # 循環インポートを避ける
 from core.standards import (
     ALPHA_KH,
     E0_FROM_N,
+    GROUP_PILE_KH_COEF,
+    GROUP_PILE_SPACING_RATIO,
     KV_A_COEF,
     E0Method,
 )
@@ -61,10 +63,39 @@ class LateralSprings:
     iterations: int
     beta_le: float  # βLe(半無限長の判定に用いる)
     de: float = 1.0  # kH に乗じた液状化の低減係数(1.0 = 低減なし)
+    group_factor: float = 1.0  # kH に乗じた群杭の補正係数 μ(1.0 = 補正なし)
 
     @property
     def is_semi_infinite(self) -> bool:
         return self.beta_le >= 3.0
+
+    @property
+    def is_group_corrected(self) -> bool:
+        return self.group_factor < 1.0
+
+
+def group_pile_factor(spacing: float, diameter: float) -> float:
+    """群杭の水平方向地盤反力係数の補正係数 μ を返す。
+
+        μ = 1 − 0.2 (2.5 − L/D)     (L < 2.5D)
+        μ = 1                        (L ≧ 2.5D)
+
+    ``spacing`` は杭中心間隔 L (m)、``diameter`` は杭径 D (m)。矩形配置で
+    方向により間隔が異なる場合は、**小さいほうの間隔**を与える(μ が小さく
+    なり安全側)。
+
+    .. warning::
+       本補正は**線形の地盤反力係数を用いる場合**のものである。基礎地盤の
+       非線形性を考慮する場合(分布バネモデル)には適用しない。
+       また群杭影響のもう一方の柱である「仮想ケーソン基礎とみなした押込み
+       支持力の上限」は本ソフトでは未実装である。
+    """
+    if spacing <= 0 or diameter <= 0:
+        raise ValueError("杭中心間隔・杭径は正の値である必要があります")
+    ratio = spacing / diameter
+    if ratio >= GROUP_PILE_SPACING_RATIO:
+        return 1.0
+    return 1.0 - GROUP_PILE_KH_COEF * (GROUP_PILE_SPACING_RATIO - ratio)
 
 
 def axial_spring(pile: PileSpec, section: PileSection) -> float:
@@ -119,6 +150,7 @@ def lateral_springs(
     case: LoadCase,
     e0_method: E0Method = E0Method.N_VALUE,
     reduction: "SoilReduction | None" = None,
+    group_factor: float = 1.0,
     max_iter: int = 100,
     tol: float = 1e-8,
 ) -> LateralSprings:
@@ -133,7 +165,12 @@ def lateral_springs(
     乗じる(道示Ⅴ 8.2.4)。DE は E0 と同じ区間(杭頭直下 1/β)で層厚加重
     平均する。**低減は収束計算の内側で行う**ため、kH の低下が β の低下、
     ひいては地中部最大曲げモーメント位置の深部移動として現れる。
+
+    ``group_factor`` は群杭の補正係数 μ(:func:`group_pile_factor`)。
+    DE と同じく収束計算の内側で kH に乗じる。
     """
+    if not 0.0 < group_factor <= 1.0:
+        raise ValueError("群杭の補正係数 μ は 0 < μ ≦ 1 である必要があります")
     alpha_normal, alpha_seismic = ALPHA_KH[e0_method]
     alpha = alpha_seismic if case == LoadCase.LEVEL1_EQ else alpha_normal
     d = pile.diameter
@@ -158,7 +195,7 @@ def lateral_springs(
                 "この状態では適用できません。分布バネモデル(BNWF)であれば"
                 "節点ごとに扱えるため、レベル2の照査を用いてください"
             )
-        kh = kh0 * (bh / 0.3) ** (-0.75) * de
+        kh = kh0 * (bh / 0.3) ** (-0.75) * de * group_factor
         beta_new = (kh * d / (4.0 * ei)) ** 0.25
         if abs(beta_new - beta) < tol * max(1.0, beta):
             beta = beta_new
@@ -172,7 +209,7 @@ def lateral_springs(
     e0 = mean_e0(profile, embedment, depth_range)
     bh = math.sqrt(d / beta)
     de = _de_factor(reduction, embedment, depth_range)
-    kh = (alpha * e0 / 0.3) * (bh / 0.3) ** (-0.75) * de
+    kh = (alpha * e0 / 0.3) * (bh / 0.3) ** (-0.75) * de * group_factor
 
     k1 = 4.0 * ei * beta**3
     k2 = -2.0 * ei * beta**2
@@ -190,4 +227,5 @@ def lateral_springs(
         iterations=iterations,
         beta_le=beta * pile.length,
         de=de,
+        group_factor=group_factor,
     )

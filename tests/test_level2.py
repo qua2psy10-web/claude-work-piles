@@ -853,3 +853,46 @@ def test_equilibrium_holds_with_bnwf():
         assert sum(
             r.moment + r.x * r.axial for r in step.reactions
         ) == pytest.approx(step.m, rel=1e-6, abs=1e-6)
+
+
+# --- 群杭の補正係数 μ -------------------------------------------------------
+
+
+NARROW = PileArrangement(nx=3, ny=3, spacing_x=2.0, spacing_y=2.0)
+
+
+def test_group_correction_is_skipped_for_the_distributed_spring_model():
+    """基礎地盤の非線形性を考慮する場合、μ による補正は考慮しない。"""
+    from core.analysis.level2 import run_level2
+
+    result = run_level2(
+        STEEL, NARROW, FOOTING, ground_with_kep(),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0,
+    )
+    assert result.group_factor == 1.0
+    note = next(n for n in result.notes if "補正係数 μ" in n)
+    assert "乗じていない" in note
+
+
+def test_group_correction_applies_on_the_elastic_path():
+    """KEP が無く杭頭バネの弾性解析に落ちる場合は μ を乗じる。"""
+    from core.analysis.level2 import run_level2
+
+    result = run_level2(
+        STEEL, NARROW, FOOTING, sample_ground(),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0,
+    )
+    assert result.group_factor == pytest.approx(0.90)
+    assert any("kH に乗じている" in n for n in result.notes)
+
+
+def test_no_group_note_when_spacing_is_wide_enough():
+    from core.analysis.level2 import run_level2
+
+    result = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, ground_with_kep(),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0,
+    )
+    assert result.group_factor == 1.0
+    # 群杭の補正に関する実行時の注記(制限事項の一覧とは別)が出ないこと
+    assert not any("乗じ" in n for n in result.notes)

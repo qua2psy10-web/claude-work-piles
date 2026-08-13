@@ -269,3 +269,31 @@ def test_report_omits_the_reduction_row_when_not_applied():
     loads = [FootingLoads(case=LoadCase.LEVEL1_EQ, v=9000.0, h=2000.0, m=8000.0)]
     report = analyze(PILE, ARRANGEMENT, FOOTING, liquefiable_profile(), loads)
     assert "液状化による低減係数" not in build_report(sample_project(), report)
+
+
+def test_report_shows_the_group_pile_factor_only_when_it_applies():
+    """μ を乗じた場合だけ、バネ定数の表に μ の行を出す。"""
+    from core.analysis.stability import analyze
+    from core.models import Footing, PileArrangement
+    from core.report.markdown import build_report
+    from tests.test_validation import sample_inputs, sample_loads
+
+    pile, wide, _, profile = sample_inputs()
+    footing = Footing(width_x=12.0, width_y=12.0, height=1.5, embedment=2.0)
+    project = DesignProject(
+        soil_profile=profile, pile=pile, footing=footing, loads=sample_loads()
+    )
+
+    narrow = PileArrangement(nx=3, ny=3, spacing_x=2.0, spacing_y=2.0)
+    text = build_report(
+        project.model_copy(update={"arrangement": narrow}),
+        analyze(pile, narrow, footing, profile, sample_loads()),
+    )
+    assert "群杭の補正係数 μ" in text
+    assert "0.900" in text
+
+    text = build_report(
+        project.model_copy(update={"arrangement": wide}),
+        analyze(pile, wide, footing, profile, sample_loads()),
+    )
+    assert "群杭の補正係数" not in text

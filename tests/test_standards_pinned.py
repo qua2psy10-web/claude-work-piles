@@ -604,19 +604,73 @@ def test_tau_max_is_a_different_table_from_tau_c():
     assert st.TAU_MAX_CONCRETE[50] == st.TAU_MAX_CONCRETE[60] == 6.0
 
 
-def test_min_pile_spacing_ratio_is_advisory_only():
-    """2.5D は**原典未照合**。警告にのみ用い、計算には一切入れない。"""
-    assert st.MIN_PILE_SPACING_RATIO == 2.5
-    # 出典が確認できていないことをコード上に残しておく
+def test_group_pile_spacing_is_a_threshold_not_a_minimum():
+    """2.5D は群杭影響を考慮する境界。最小寸法の規定ではない(第28回で訂正)。"""
+    assert st.GROUP_PILE_SPACING_RATIO == 2.5
+    # 「最小値」という誤った説明に戻らないよう、注意書きを固定する
     source = inspect.getsource(st)
-    marker = source[: source.index("MIN_PILE_SPACING_RATIO = ")]
-    assert "確度 C(原典未照合)" in marker.rsplit("\n\n", 1)[-1]
+    marker = source[: source.index("GROUP_PILE_SPACING_RATIO = ")]
+    comment = marker.rsplit("\n\n", 1)[-1]
+    assert "これは「最小値」ではない" in comment
+    assert "令和7年改訂版" in comment  # H24 の条文そのものではない旨
 
-    # 使い道は警告の閾値だけ。照査・支持力・剛性の側で参照していないこと
-    root = Path(st.__file__).resolve().parent
-    users = {
-        path.relative_to(root).as_posix()
-        for path in root.rglob("*.py")
-        if "MIN_PILE_SPACING_RATIO" in path.read_text(encoding="utf-8")
+
+def test_group_pile_kh_correction():
+    """μ = 1 − 0.2(2.5 − L/D)。境界で連続し、L=D でも 0.7 を下回らない。"""
+    from core.capacity.springs import group_pile_factor
+
+    assert st.GROUP_PILE_KH_COEF == 0.2
+    # 2.5D 以上では補正しない
+    assert group_pile_factor(2.5, 1.0) == 1.0
+    assert group_pile_factor(4.0, 1.0) == 1.0
+    # 境界で連続(不連続なジャンプが無いこと)
+    assert group_pile_factor(2.499, 1.0) == pytest.approx(1.0, abs=1e-3)
+    # 提供資料の計算例: D=1.00 m、L=2.20 m → μ = 0.94
+    assert group_pile_factor(2.20, 1.00) == pytest.approx(0.94)
+    # 単調増加、かつ下限は L=D の 0.7
+    values = [group_pile_factor(r, 1.0) for r in (1.0, 1.5, 2.0, 2.5)]
+    assert values == sorted(values)
+    assert values[0] == pytest.approx(0.7)
+    # 相似則: μ は L/D のみの関数
+    assert group_pile_factor(2.2, 1.0) == pytest.approx(group_pile_factor(4.4, 2.0))
+
+
+def test_region_cz_covers_every_zone_and_allows_1_20():
+    """地域別補正係数。cIz は A1・B1 で 1.20(1.0 が上限ではない)。"""
+    assert st.REGION_CZ == {
+        "A1": (1.20, 1.00),
+        "A2": (1.00, 1.00),
+        "B1": (1.20, 0.85),
+        "B2": (1.00, 0.85),
+        "C": (0.80, 0.70),
     }
-    assert users == {"standards.py", "validation.py"}
+    assert st.CZ_MAX == 1.20
+    assert st.CZ_MIN == 0.70
+    # タイプI はタイプII 以上(どの地域でも)
+    for zone, (cz1, cz2) in st.REGION_CZ.items():
+        assert cz1 >= cz2, zone
+    # 入力モデルが 1.20 を受け付けること(第28回まで 1.0 で頭打ちだった)
+    from core.models.project import SeismicConditions
+
+    assert SeismicConditions(cz_type1=1.20, cz_type2=1.00).cz_type1 == 1.20
+
+
+def test_khg0_matches_the_supplied_table():
+    """khg0(地盤面)は提供資料の表4と一致。橋の慣性力用 khc0 とは別物。"""
+    assert st.KHG0_LIQUEFACTION == {
+        st.GroundMotionType.LEVEL2_TYPE1: {
+            st.GroundType.TYPE_I: 0.50,
+            st.GroundType.TYPE_II: 0.45,
+            st.GroundType.TYPE_III: 0.40,
+        },
+        st.GroundMotionType.LEVEL2_TYPE2: {
+            st.GroundType.TYPE_I: 0.80,
+            st.GroundType.TYPE_II: 0.70,
+            st.GroundType.TYPE_III: 0.60,
+        },
+    }
+    # タイプII のほうが大きく、良い地盤ほど大きい
+    for ground in st.GroundType:
+        t1 = st.KHG0_LIQUEFACTION[st.GroundMotionType.LEVEL2_TYPE1][ground]
+        t2 = st.KHG0_LIQUEFACTION[st.GroundMotionType.LEVEL2_TYPE2][ground]
+        assert t2 > t1

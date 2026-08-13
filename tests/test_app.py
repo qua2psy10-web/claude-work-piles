@@ -240,3 +240,27 @@ def test_questionable_arrangement_is_computed_with_a_warning():
     assert not at.exception
     assert at.session_state["report"].warnings
     assert any("杭中心間隔" in w.value for w in at.warning)
+
+
+def test_region_selector_sets_the_correction_factors():
+    """地域区分を選ぶと cIz・cIIz が表から入る。A1 は 1.20(1.0 上限ではない)。"""
+    at = run_app()
+    selector = next(s for s in at.selectbox if "地域区分" in s.label)
+    assert selector.value == "A2"
+    seismic = at.session_state["project"].seismic
+    assert (seismic.cz_type1, seismic.cz_type2) == (1.00, 1.00)
+
+    selector.set_value("A1").run()
+    assert not at.exception
+    seismic = at.session_state["project"].seismic
+    assert seismic.cz_type1 == 1.20
+    assert seismic.cz_type2 == 1.00
+
+
+def test_region_selector_falls_back_to_manual_entry():
+    at = run_app()
+    next(s for s in at.selectbox if "地域区分" in s.label).set_value(
+        "(直接入力)"
+    ).run()
+    assert not at.exception
+    assert any("cIz" in n.label for n in at.number_input)

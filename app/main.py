@@ -37,7 +37,10 @@ from core.section.rc import RebarLayout, StirrupLayout
 from core.soil.liquefaction import SoilReduction, assess_liquefaction
 from core.validation import InvalidInputError
 from core.standards import (
+    CZ_MAX,
+    CZ_MIN,
     EC_CONCRETE,
+    REGION_CZ,
     SIGMA_CA_CONCRETE,
     SIGMA_A_STEEL,
     REBAR_GRADES,
@@ -46,6 +49,14 @@ from core.standards import (
     GroundType,
     StructureType,
 )
+
+def _region_of(cz1: float, cz2: float) -> int:
+    """(cIz, cIIz) に一致する地域区分の選択肢番号。無ければ「直接入力」。"""
+    for i, (name, values) in enumerate(REGION_CZ.items(), start=1):
+        if values == (cz1, cz2):
+            return i
+    return 0
+
 
 LAYER_COLUMNS = {
     "層名": "name",
@@ -345,6 +356,12 @@ def _render_stability(report: StabilityReport) -> None:
                 f"βL = {sp.beta_le:.2f}"
                 + ("(半無限長)" if sp.is_semi_infinite else "(**有限長: 要注意**)")
                 + f", 収束 {sp.iterations} 回"
+                + (f", DE = {sp.de:.3f}" if sp.de < 1.0 else "")
+                + (
+                    f", 群杭の補正係数 μ = {sp.group_factor:.3f}"
+                    if sp.is_group_corrected
+                    else ""
+                )
             )
             if not sp.is_semi_infinite:
                 st.warning(
@@ -792,18 +809,37 @@ def main() -> None:
             ),
             key=f"gt_{nonce}",
         )
-        cz1 = st.number_input(
-            "地域別補正係数 cIz(タイプI)",
-            0.1, 1.0,
-            value=(loaded.seismic.cz_type1 if loaded else 1.0),
-            step=0.05, key=f"cz1_{nonce}",
+        region_options = ["(直接入力)"] + list(REGION_CZ)
+        region = st.selectbox(
+            "地域区分(道示Ⅴ 4.4)",
+            region_options,
+            index=(
+                region_options.index("A2")
+                if not loaded
+                else _region_of(loaded.seismic.cz_type1, loaded.seismic.cz_type2)
+            ),
+            key=f"zone_{nonce}",
+            help=(
+                "地域区分を選ぶと cIz・cIIz が表から決まる。**A1・B1 地域の "
+                "cIz は 1.20** であり、1.0 が上限ではない"
+            ),
         )
-        cz2 = st.number_input(
-            "地域別補正係数 cIIz(タイプII)",
-            0.1, 1.0,
-            value=(loaded.seismic.cz_type2 if loaded else 1.0),
-            step=0.05, key=f"cz2_{nonce}",
-        )
+        if region in REGION_CZ:
+            cz1, cz2 = REGION_CZ[region]
+            st.caption(f"cIz = {cz1:.2f}、cIIz = {cz2:.2f}(表-4.4.1 による)")
+        else:
+            cz1 = st.number_input(
+                "地域別補正係数 cIz(タイプI)",
+                CZ_MIN, CZ_MAX,
+                value=(loaded.seismic.cz_type1 if loaded else 1.0),
+                step=0.05, key=f"cz1_{nonce}",
+            )
+            cz2 = st.number_input(
+                "地域別補正係数 cIIz(タイプII)",
+                CZ_MIN, CZ_MAX,
+                value=(loaded.seismic.cz_type2 if loaded else 1.0),
+                step=0.05, key=f"cz2_{nonce}",
+            )
         gwl = st.number_input(
             "地下水位の深さ (m)",
             0.0, 99.0,
