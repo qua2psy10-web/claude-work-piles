@@ -362,6 +362,17 @@ ALPHA_KH: dict[E0Method, tuple[float, float]] = {
     E0Method.LAB_COMPRESSION: (4.0, 8.0),
 }
 
+# 杭中心間隔の最小値(杭径に対する倍率)。
+#
+# .. warning::
+#    **確度 C(原典未照合)。** 道示Ⅳ は杭中心間隔の最小値を規定しているが、
+#    その条文を参照できていない。一般に 2.5D 程度とされることから暫定値を
+#    置いている。**照査ではなく警告にのみ用いており**、計算結果には一切
+#    影響しない(:mod:`core.validation`)。物理的に成立しない条件
+#    (中心間隔 ≤ 杭径、すなわち杭どうしが重なる)は、この値によらず
+#    別途エラーとして弾いている。
+MIN_PILE_SPACING_RATIO = 2.5
+
 # 杭基礎の許容水平変位(道示Ⅳ 9.6): 杭径1.5m未満は15mm、以上は杭径の1%
 ALLOWABLE_DISPLACEMENT_MM = 15.0
 ALLOWABLE_DISPLACEMENT_RATIO = 0.01

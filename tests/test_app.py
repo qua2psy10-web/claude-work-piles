@@ -211,3 +211,32 @@ def test_stability_without_the_reduction_keeps_full_skin_friction():
     assert not report.bearing.has_reduced_skin
     assert report.bearing_seismic is None
     assert all(s.de == 1.0 for s in report.bearing.skin_segments)
+
+
+def test_impossible_arrangement_is_refused_instead_of_reported_as_ok():
+    """杭が重なる配置は、結果を出さずに止める。
+
+    以前は杭径 1.0 m を 0.5 m 間隔にしても総合判定「OK」を返していた。
+    """
+    at = run_app()
+    next(n for n in at.number_input if n.label == "杭間隔 (m)").set_value(0.5).run()
+    next(b for b in at.button if "安定計算を実行" in b.label).click().run()
+
+    assert not at.exception
+    errors = [e.value for e in at.error]
+    assert any("入力が物理的に成立しません" in e for e in errors)
+    assert any("杭中心間隔" in e and "重なり" in e for e in errors)
+    # 結果は一切表示しない
+    assert not any("全ケース OK" in s.value for s in at.success)
+    assert "report" not in at.session_state
+
+
+def test_questionable_arrangement_is_computed_with_a_warning():
+    """2.5D 未満は計算を続け、注記として画面に出す。"""
+    at = run_app()
+    next(n for n in at.number_input if n.label == "杭間隔 (m)").set_value(2.0).run()
+    next(b for b in at.button if "安定計算を実行" in b.label).click().run()
+
+    assert not at.exception
+    assert at.session_state["report"].warnings
+    assert any("杭中心間隔" in w.value for w in at.warning)

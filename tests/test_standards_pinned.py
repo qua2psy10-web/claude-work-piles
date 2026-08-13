@@ -8,6 +8,9 @@
 **定数を修正する場合は、本テストの期待値も同時に更新し、
 `docs/VERIFICATION.md` の照合欄に出典を記録すること。**
 """
+import inspect
+from pathlib import Path
+
 import pytest
 
 from core import standards as st
@@ -599,3 +602,21 @@ def test_tau_max_is_a_different_table_from_tau_c():
         assert st.TAU_MAX_CONCRETE[fck] > tau_c * 5
     # 高強度側は 6.0 で頭打ち
     assert st.TAU_MAX_CONCRETE[50] == st.TAU_MAX_CONCRETE[60] == 6.0
+
+
+def test_min_pile_spacing_ratio_is_advisory_only():
+    """2.5D は**原典未照合**。警告にのみ用い、計算には一切入れない。"""
+    assert st.MIN_PILE_SPACING_RATIO == 2.5
+    # 出典が確認できていないことをコード上に残しておく
+    source = inspect.getsource(st)
+    marker = source[: source.index("MIN_PILE_SPACING_RATIO = ")]
+    assert "確度 C(原典未照合)" in marker.rsplit("\n\n", 1)[-1]
+
+    # 使い道は警告の閾値だけ。照査・支持力・剛性の側で参照していないこと
+    root = Path(st.__file__).resolve().parent
+    users = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*.py")
+        if "MIN_PILE_SPACING_RATIO" in path.read_text(encoding="utf-8")
+    }
+    assert users == {"standards.py", "validation.py"}

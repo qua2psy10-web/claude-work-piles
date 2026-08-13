@@ -16,6 +16,7 @@ from core.models.loads import FootingLoads, LoadCase
 from core.models.pile import Footing, PileArrangement, PileSpec, PileType
 from core.models.soil import SoilProfile
 from core.soil.liquefaction import SoilReduction
+from core.validation import ValidationIssue, raise_on_error, validate_inputs
 from core.section.checks import MaterialSpec, PileStressResult, check_section
 from core.section.detailing import RebarDetailingResult, check_rebar_detailing
 from core.section.shear import (
@@ -159,6 +160,8 @@ class StabilityReport:
     # 軸方向鉄筋量の構造細目照査(道示Ⅳ 7.3)。場所打ち杭のみ。
     # 荷重ケースに依らない断面の照査なので報告書レベルに1つ持つ。
     rebar_detailing: RebarDetailingResult | None = None
+    # 入力の妥当性チェックで出た**警告**(エラーは例外として送出済み)
+    warnings: list[ValidationIssue] = field(default_factory=list)
 
     def bearing_for(self, case: LoadCase) -> BearingCapacity:
         """荷重ケースに適用する支持力。
@@ -214,7 +217,16 @@ def analyze(
         なお DE 自体はレベル2地震動に対する液状化判定から得られる値である。
         レベル1地震時の照査に用いることの適否は利用者の判断となる
         (レベル1地震動に対する液状化判定は未実装。注記を出す)。
+
+    Raises
+    ------
+    core.validation.InvalidInputError
+        入力が物理的に成立しない場合(杭どうしが重なる、杭がフーチングから
+        はみ出す等)。計算しても意味がないため、結果を返さずに送出する。
     """
+    warnings = raise_on_error(
+        validate_inputs(pile, arrangement, footing, profile, loads, material)
+    )
     section = pile_section(pile, fck=fck)
     # 常時・暴風時は低減なし。DE は耐震設計上の扱いなので地震時のみ低減する
     bearing = compute_bearing_capacity(pile, profile, footing.embedment)
@@ -226,7 +238,7 @@ def analyze(
     kv = axial_spring(pile, section)
     delta_a = allowable_displacement(pile.diameter)
 
-    notes: list[str] = []
+    notes: list[str] = [f"⚠ {w.message}({w.field})" for w in warnings]
     if pile.pile_type in (PileType.PHC, PileType.SC):
         if pile.concrete_young is not None:
             notes.append(
@@ -436,4 +448,5 @@ def analyze(
         notes=notes,
         bearing_seismic=bearing_seismic,
         rebar_detailing=detailing,
+        warnings=warnings,
     )

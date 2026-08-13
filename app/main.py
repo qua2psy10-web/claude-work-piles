@@ -35,6 +35,7 @@ from core.report.markdown import build_report
 from core.section.checks import MaterialSpec
 from core.section.rc import RebarLayout, StirrupLayout
 from core.soil.liquefaction import SoilReduction, assess_liquefaction
+from core.validation import InvalidInputError
 from core.standards import (
     EC_CONCRETE,
     SIGMA_CA_CONCRETE,
@@ -1311,6 +1312,13 @@ def main() -> None:
                     e0_method=E0Method(e0_method),
                     reduction=reduction,
                 )
+            except InvalidInputError as exc:
+                st.error("**入力が物理的に成立しません。** 計算を中止しました。")
+                for issue in exc.issues:
+                    st.error(
+                        f"**{issue.field}**: {issue.message}"
+                        + (f"\n\n→ {issue.remedy}" if issue.remedy else "")
+                    )
             except (ValueError, NotImplementedError, RuntimeError) as exc:
                 st.error(f"計算エラー: {exc}")
             else:
