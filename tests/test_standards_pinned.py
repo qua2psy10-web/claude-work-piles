@@ -560,3 +560,42 @@ def test_p_hu_factors_pinned():
     # 土質の網羅
     from core.models.soil import SoilType
     assert set(st.ALPHA_P_PILE) == {t.value for t in SoilType}
+
+
+def test_rebar_detailing_constants():
+    """道示Ⅳ 7.3 最小鉄筋量・最大鉄筋量。**原典で照合済み**(第23回)。"""
+    assert st.MIN_REBAR_RATIO_AXIAL == 0.008
+    assert st.MAX_TENSILE_REBAR_RATIO == 0.02
+    assert st.MAX_TOTAL_REBAR_RATIO == 0.06
+    assert st.ULTIMATE_CONCRETE_COEF == 0.85
+    assert st.CRACK_TENSILE_STRENGTH_COEF == 0.23
+    assert st.CRACK_TENSILE_STRENGTH_EXPONENT == pytest.approx(2.0 / 3.0)
+    assert st.CRACK_MOMENT_MARGIN == 1.7
+    assert st.SURFACE_REBAR_MIN_AREA_PER_M == 500.0
+    assert st.SURFACE_REBAR_MAX_SPACING == 300.0
+    # 引張鉄筋の上限は全鉄筋の上限より厳しい
+    assert st.MAX_TENSILE_REBAR_RATIO < st.MAX_TOTAL_REBAR_RATIO
+    # 最小は最大より小さい(当然だが、値の取り違えを検出する)
+    assert st.MIN_REBAR_RATIO_AXIAL < st.MAX_TENSILE_REBAR_RATIO
+
+
+def test_rebar_yield_points():
+    """材質記号がそのまま降伏点(SD345 → 345)。せん断耐力では 345 で頭打ち。"""
+    assert st.REBAR_YIELD_POINT == {"SD345": 345.0, "SD390": 390.0, "SD490": 490.0}
+    assert set(st.REBAR_YIELD_POINT) == set(st.REBAR_GRADES)
+    for grade, yield_point in st.REBAR_YIELD_POINT.items():
+        assert float(grade.removeprefix("SD")) == yield_point
+    assert st.SHEAR_REBAR_YIELD_CAP == min(st.REBAR_YIELD_POINT.values())
+    assert st.SHEAR_CC_FOUNDATION == 1.0
+
+
+def test_tau_max_is_a_different_table_from_tau_c():
+    """表-4.3.2(斜め圧縮破壊の上限)と表-5.2.1(負担できる値)は別物。"""
+    assert st.TAU_MAX_CONCRETE == {
+        21: 2.8, 24: 3.2, 27: 3.6, 30: 4.0, 40: 5.3, 50: 6.0, 60: 6.0,
+    }
+    # τc(0.33〜0.37)とはひと桁違う
+    for fck, tau_c in st.TAU_C_CONCRETE.items():
+        assert st.TAU_MAX_CONCRETE[fck] > tau_c * 5
+    # 高強度側は 6.0 で頭打ち
+    assert st.TAU_MAX_CONCRETE[50] == st.TAU_MAX_CONCRETE[60] == 6.0

@@ -294,6 +294,40 @@ def _render_stability(report: StabilityReport) -> None:
                     "いません。支持層の設定・杭長を確認してください。"
                 )
 
+    if report.rebar_detailing is not None:
+        dt = report.rebar_detailing
+        with st.expander("軸方向鉄筋量の照査(道示Ⅳ 7.3)", expanded=True):
+            c1, c2, c3 = st.columns(3)
+            c1.metric("配置鉄筋量", f"{dt.provided_area:,.0f} mm²")
+            c2.metric("必要最小鉄筋量", f"{dt.required_min_area:,.0f} mm²")
+            c3.metric("Mc(ひび割れ)", f"{dt.cracking_moment:,.0f} kN·m")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "照査項目": c.name,
+                            "値": round(c.value, 2),
+                            "制限値": ("≥ " if c.kind == "min" else "≤ ")
+                            + f"{c.limit:,.2f}",
+                            "単位": c.unit,
+                            "比": round(c.ratio, 3),
+                            "判定": c.judgement,
+                        }
+                        for c in dt.checks
+                    ]
+                ),
+                width="stretch",
+            )
+            st.caption(
+                f"A′1 = {dt.a1:,.0f} mm²"
+                + (f"、A′2 = {dt.a2:,.0f} mm²" if dt.a2 is not None else "")
+                + f" → A′ = {dt.required_concrete_area:,.0f} mm²。"
+                f"σbt = 0.23・σck^(2/3) = {dt.sigma_bt:.3f} N/mm²"
+            )
+            for note in dt.notes:
+                (st.warning if note.startswith("⚠") or "未入力" in note
+                 else st.info)(note)
+
     for case in report.cases:
         label = case.loads.case.value
         header = f"{label} — {'OK' if case.all_ok else 'NG'}"

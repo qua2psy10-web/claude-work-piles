@@ -94,8 +94,9 @@ def test_markdown_report_contains_all_sections():
         "## 3. 杭の軸方向支持力",
         "## 4. 安定計算 — 常時",
         "## 4. 安定計算 — レベル1地震時",
-        "## 5. 負の周面摩擦力の検討",
-        "## 6. 総括",
+        "## 5. 軸方向鉄筋量の照査",
+        "## 6. 負の周面摩擦力の検討",
+        "## 7. 総括",
     ):
         assert heading in text
     assert "テスト橋" in text

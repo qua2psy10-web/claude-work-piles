@@ -17,6 +17,7 @@ from core.models.pile import Footing, PileArrangement, PileSpec, PileType
 from core.models.soil import SoilProfile
 from core.soil.liquefaction import SoilReduction
 from core.section.checks import MaterialSpec, PileStressResult, check_section
+from core.section.detailing import RebarDetailingResult, check_rebar_detailing
 from core.section.shear import ShearResult, check_shear
 from core.section.pile_head import PileHeadResult, check_pile_head
 from core.standards import (
@@ -124,6 +125,9 @@ class StabilityReport:
     # 液状化を考慮する地震時の支持力(周面摩擦力度を DE で低減)。
     # 低減がない場合は None で、全ケースが :attr:`bearing` を用いる。
     bearing_seismic: BearingCapacity | None = None
+    # 軸方向鉄筋量の構造細目照査(道示Ⅳ 7.3)。場所打ち杭のみ。
+    # 荷重ケースに依らない断面の照査なので報告書レベルに1つ持つ。
+    rebar_detailing: RebarDetailingResult | None = None
 
     def bearing_for(self, case: LoadCase) -> BearingCapacity:
         """荷重ケースに適用する支持力。
@@ -139,6 +143,8 @@ class StabilityReport:
     def all_ok(self) -> bool:
         if self.negative_friction is not None and not self.negative_friction.ok:
             return False
+        if self.rebar_detailing is not None and not self.rebar_detailing.all_ok:
+            return False
         return all(c.all_ok for c in self.cases)
 
 
@@ -153,6 +159,7 @@ def analyze(
     check_negative_friction: bool = False,
     e0_method: E0Method = E0Method.N_VALUE,
     reduction: SoilReduction | None = None,
+    level2_axial: float | None = None,
 ) -> StabilityReport:
     """全荷重ケースについて安定計算・断面照査・杭頭結合部の照査を行う。
 
@@ -366,6 +373,26 @@ def analyze(
             pile, profile, footing.embedment, dead_load, bearing.ru
         )
 
+    detailing = None
+    if material is not None and material.rebar is not None:
+        try:
+            detailing = check_rebar_detailing(
+                pile,
+                material.rebar,
+                material.fck,
+                material.rebar_grade,
+                # Na は常時・暴風時・レベル1地震時を通した最大軸力
+                axial_allowable=max(c.result.max_axial for c in cases),
+                moment=max(
+                    abs(c.critical_pile.moment) for c in cases
+                    if c.critical_pile is not None
+                ),
+                axial_ultimate=level2_axial,
+            )
+        except ValueError:
+            # 場所打ち杭以外。応力度照査側で未実装の注記が出る
+            detailing = None
+
     return StabilityReport(
         section=section,
         bearing=bearing,
@@ -373,4 +400,5 @@ def analyze(
         negative_friction=nf,
         notes=notes,
         bearing_seismic=bearing_seismic,
+        rebar_detailing=detailing,
     )

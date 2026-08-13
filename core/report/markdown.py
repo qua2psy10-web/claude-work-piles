@@ -46,6 +46,8 @@ def build_report(
         parts.append(_bearing_section(report))
         for case in report.cases:
             parts.append(_case_section(case))
+        if report.rebar_detailing is not None:
+            parts.append(_detailing_section(report))
         if report.negative_friction is not None:
             parts.append(_nf_section(report))
         parts.append(_summary_section(report))
@@ -187,6 +189,52 @@ def _liquefaction_section(assessment: LiquefactionAssessment) -> str:
             rows,
         )
     )
+    return "".join(s)
+
+
+def _detailing_section(report: StabilityReport) -> str:
+    """軸方向鉄筋量の構造細目照査(道示Ⅳ 7.3)。"""
+    dt = report.rebar_detailing
+    s = ["\n## 5. 軸方向鉄筋量の照査(道示Ⅳ 7.3)\n"]
+    s.append(
+        "\n応力度の照査とは別に、**配筋そのものが足りているか・過密でないか**を"
+        "確認する。趣旨はひび割れとともに耐力が減じて急激に破壊することの防止。\n\n"
+        f"- 配置鉄筋量 = {_num(dt.provided_area, 0)} mm²"
+        f"(うち図心より引張側 {_num(dt.tensile_area, 0)} mm²)\n"
+        f"- 全断面積 = {_num(dt.gross_area, 0)} mm²、"
+        f"有効断面積 b・d = {_num(dt.effective_area, 0)} mm²\n"
+        f"- A′1 = Na /(0.008・σsa + σca) = {_num(dt.a1, 0)} mm²\n"
+    )
+    if dt.a2 is not None:
+        s.append(
+            f"- A′2 = Nu /(0.008・σsy + 0.85・σck) = {_num(dt.a2, 0)} mm²\n"
+        )
+    s.append(
+        f"- A′ = {_num(dt.required_concrete_area, 0)} mm² → "
+        f"必要最小鉄筋量 = 0.8% × A′ = {_num(dt.required_min_area, 0)} mm²\n"
+        f"- ひび割れ曲げモーメント Mc = Zc(σbt + N/Ac) = "
+        f"{_num(dt.cracking_moment, 1)} kN·m(σbt = 0.23・σck^(2/3) = "
+        f"{dt.sigma_bt:.3f} N/mm²)\n"
+    )
+    s.append(
+        "\n"
+        + _table(
+            ["照査項目", "値", "制限値", "単位", "比", "判定"],
+            [
+                [
+                    c.name,
+                    _num(c.value, 2),
+                    ("≥ " if c.kind == "min" else "≤ ") + _num(c.limit, 2),
+                    c.unit,
+                    f"{c.ratio:.3f}",
+                    c.judgement,
+                ]
+                for c in dt.checks
+            ],
+        )
+    )
+    for note in dt.notes:
+        s.append(f"\n> {note}\n")
     return "".join(s)
 
 
@@ -505,7 +553,7 @@ def _case_section(case: CaseResult) -> str:
 
 def _nf_section(report: StabilityReport) -> str:
     nf = report.negative_friction
-    s = ["\n## 5. 負の周面摩擦力の検討(道示Ⅳ 12.4.3)\n"]
+    s = ["\n## 6. 負の周面摩擦力の検討(道示Ⅳ 12.4.3)\n"]
     s.append(f"中立点: 地表面下 {nf.neutral_depth:.2f} m\n\n")
     s.append(
         _table(
@@ -532,7 +580,7 @@ def _nf_section(report: StabilityReport) -> str:
 
 
 def _summary_section(report: StabilityReport) -> str:
-    s = ["\n## 6. 総括\n"]
+    s = ["\n## 7. 総括\n"]
     rows = []
     for case in report.cases:
         rows.append([case.loads.case.value, "OK" if case.all_ok else "NG"])
@@ -551,7 +599,7 @@ def _summary_section(report: StabilityReport) -> str:
 
 def _level2_section(result: Level2Result) -> str:
     """レベル2地震時の照査(道示Ⅴ 地震時保有水平耐力法)。"""
-    s = ["\n## 7. レベル2地震時の照査(道示Ⅴ(H24))\n"]
+    s = ["\n## 8. レベル2地震時の照査(道示Ⅴ(H24))\n"]
     s.append(
         "水平力を漸増させるプッシュオーバー解析により基礎の降伏点を求め、"
         "応答塑性率を照査する。\n"
@@ -583,12 +631,12 @@ def _level2_section(result: Level2Result) -> str:
         mu = result.response_ductility
         if mu is not None:
             rows.append(["応答塑性率 μr = δr/δy", f"{mu:.2f}"])
-        s.append("\n### 7.1 応答値\n")
+        s.append("\n### 8.1 応答値\n")
         s.append(_table(["項目", "値"], rows))
 
     if result.shear_capacity is not None:
         cap = result.shear_capacity
-        s.append("\n### 7.2 杭体のせん断耐力(道示Ⅳ 5.2.3)\n")
+        s.append("\n### 8.2 杭体のせん断耐力(道示Ⅳ 5.2.3)\n")
         s.append(
             "\nPs = Sc + Ss、Sc = cc・ce・cpt・cN・τc・b・d、"
             "Ss = Aw・σsy・d・(sinθ + cosθ)/(1.15 s)\n\n"
@@ -619,7 +667,7 @@ def _level2_section(result: Level2Result) -> str:
             )
 
     if result.checks:
-        s.append("\n### 7.3 照査結果\n")
+        s.append("\n### 8.3 照査結果\n")
         s.append(
             _table(
                 ["照査項目", "応答値", "制限値", "単位", "比", "判定"],
@@ -640,7 +688,7 @@ def _level2_section(result: Level2Result) -> str:
 
     sr = result.soil_reaction
     if sr is not None:
-        s.append("\n### 7.3 水平地盤反力度と上限値 pHU の突合(診断)\n")
+        s.append("\n### 8.4 水平地盤反力度と上限値 pHU の突合(診断)\n")
         s.append(
             "判定に用いた杭: "
             + ("最前列" if sr.front_row else "最前列以外(砂質地盤で pHU が 1/2)")
@@ -660,7 +708,7 @@ def _level2_section(result: Level2Result) -> str:
                 "地盤抵抗を過大に評価しており、結果は非安全側である。\n"
             )
 
-    s.append("\n### 7.4 この解析の制限事項\n")
+    s.append("\n### 8.5 この解析の制限事項\n")
     for note in result.notes:
         s.append(f"- {note}\n")
     return "".join(s)
