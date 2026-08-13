@@ -415,10 +415,14 @@ def _render_level2(result) -> None:
     if result.shear_capacity is not None:
         cap = result.shear_capacity
         st.markdown("**杭体のせん断耐力(道示Ⅳ 5.2.3)**")
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Sc(コンクリート)", f"{cap.sc:,.0f} kN")
         c2.metric("Ss(斜引張鉄筋)", f"{cap.ss:,.0f} kN")
-        c3.metric("Ps = Sc + Ss", f"{cap.total:,.0f} kN")
+        c3.metric("Sus = Sc + Ss", f"{cap.total:,.0f} kN")
+        c4.metric(
+            "Suc(斜め圧縮)", f"{cap.web_crushing_capacity:,.0f} kN",
+            help="ウェブコンクリートの圧壊に対する耐力(道示Ⅲ 表-4.3.2)",
+        )
         st.caption(
             f"Sc = cc·ce·cpt·cN·τc·b·d(cc = {cap.cc:g}、ce = {cap.ce:.3f}、"
             f"cpt = {cap.cpt:.3f}、cN = {cap.cn:.3f}、τc = {cap.tau_c:.2f} N/mm²、"
@@ -429,6 +433,12 @@ def _render_level2(result) -> None:
                 else "。帯鉄筋が未入力のため Ss = 0"
             )
         )
+        if cap.web_crushing_governs:
+            st.warning(
+                f"**斜め圧縮破壊が支配しています**(Suc = "
+                f"{cap.web_crushing_capacity:,.0f} < Sus = {cap.total:,.0f} kN)。"
+                "斜引張鉄筋を増やしても耐力は伸びません。断面の見直しが必要です。"
+            )
 
     if result.checks:
         st.markdown("**照査結果**")

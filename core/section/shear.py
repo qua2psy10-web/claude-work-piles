@@ -60,6 +60,7 @@ from core.standards import (
     SHEAR_REBAR_YIELD_CAP,
     STRESS_INCREASE,
     TAU_A1_CONCRETE,
+    TAU_MAX_CONCRETE,
     TAU_A2_CONCRETE,
     TAU_C_CONCRETE,
 )
@@ -189,11 +190,39 @@ class ShearCapacity:
     cn: float
     tau_c: float  # 表-5.2.1 の値 (N/mm2)
     sigma_sy: float | None  # 用いた斜引張鉄筋の降伏点 (N/mm2、345 で頭打ち)
+    tau_max: float = 0.0  # 表-4.3.2 の平均せん断応力度の最大値 (N/mm2)
 
     @property
     def total(self) -> float:
-        """せん断耐力 Ps (kN)。"""
+        """斜引張破壊に対する耐力 Sus = Ps = Sc + Ss (kN)。"""
         return self.sc + self.ss
+
+    @property
+    def web_crushing_capacity(self) -> float:
+        """ウェブコンクリートの圧壊に対する耐力 Suc = τmax・bw・d (kN)。
+
+        RC部材なので PC鋼材の分力 Sp = 0 とする(道示Ⅲ 4.3.4(2))。
+        """
+        return (
+            self.tau_max
+            * (self.width * 1000.0)
+            * (self.effective_depth * 1000.0)
+            / 1000.0
+        )
+
+    @property
+    def governing_capacity(self) -> float:
+        """終局時に満たすべき耐力 min(Sus, Suc) (kN)。
+
+        斜引張鉄筋を増やしても Suc は超えられないため、実質的な上限は
+        この小さいほうである。
+        """
+        return min(self.total, self.web_crushing_capacity)
+
+    @property
+    def web_crushing_governs(self) -> bool:
+        """斜め圧縮破壊が支配しているか(鉄筋を増やしても耐力が伸びない)。"""
+        return self.web_crushing_capacity < self.total
 
 
 def shear_capacity_level2(
@@ -256,7 +285,13 @@ def shear_capacity_level2(
             / (1.15 * stirrup.spacing_mm)
             / 1000.0
         )
+    if fck not in TAU_MAX_CONCRETE:
+        raise ValueError(
+            f"σck={fck} の τmax(表-4.3.2)が未定義です。"
+            f"対応値: {sorted(TAU_MAX_CONCRETE)}"
+        )
     return ShearCapacity(
+        tau_max=TAU_MAX_CONCRETE[fck],
         sc=sc, ss=ss, width=b, effective_depth=d, pt=pt,
         cc=SHEAR_CC_FOUNDATION, ce=ce, cpt=cpt, cn=cn,
         tau_c=tau_c, sigma_sy=sigma_sy,

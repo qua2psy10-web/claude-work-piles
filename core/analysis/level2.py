@@ -289,15 +289,30 @@ class Level2Result:
                 )
             )
         if self.shear_capacity is not None and self.response_shear is not None:
+            cap = self.shear_capacity
             results.append(
                 Level2Check(
-                    name="杭体のせん断耐力",
+                    name="杭体のせん断耐力(斜引張破壊)",
                     demand=abs(self.response_shear),
-                    capacity=self.shear_capacity.total,
+                    capacity=cap.total,
                     unit="kN",
                     note=(
-                        f"Ps = Sc + Ss = {self.shear_capacity.sc:.0f} + "
-                        f"{self.shear_capacity.ss:.0f} kN(道示Ⅳ 5.2.3)"
+                        f"Sus = Sc + Ss = {cap.sc:.0f} + {cap.ss:.0f} kN"
+                        "(道示Ⅳ 5.2.3)"
+                    ),
+                )
+            )
+            results.append(
+                Level2Check(
+                    name="コンクリートの斜め圧縮破壊",
+                    demand=abs(self.response_shear),
+                    capacity=cap.web_crushing_capacity,
+                    unit="kN",
+                    note=(
+                        f"Suc = τmax・bw・d = {cap.tau_max:.1f}×"
+                        f"{cap.width * 1000:.0f}×{cap.effective_depth * 1000:.0f}"
+                        "(道示Ⅲ 4.3.4、表-4.3.2。斜引張鉄筋を増やしても"
+                        "この上限は超えられない)"
                     ),
                 )
             )

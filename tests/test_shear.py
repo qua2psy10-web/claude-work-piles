@@ -628,3 +628,83 @@ def test_reports_include_the_stirrup_and_level2_shear():
     assert "345 N/mm² で頭打ち" in text
     # L1 側は必要量と配置量の両方が出る
     assert report.cases[0].shear.stirrup is not None
+
+
+# --- 斜め圧縮破壊(道示Ⅲ 4.3.4、表-4.3.2)------------------------------------
+
+
+def test_tau_max_table_pinned():
+    """表-4.3.2 コンクリートの平均せん断応力度の最大値。"""
+    from core import standards as st_mod
+
+    assert st_mod.TAU_MAX_CONCRETE == {
+        21: 2.8, 24: 3.2, 27: 3.6, 30: 4.0, 40: 5.3, 50: 6.0, 60: 6.0,
+    }
+    # τc(負担できる値)とは用途が異なり、桁が違う
+    for fck, tau_c in st_mod.TAU_C_CONCRETE.items():
+        assert st_mod.TAU_MAX_CONCRETE[fck] > tau_c * 5
+    # 許容応力度法の τa2(斜引張鉄筋と共同の上限)より大きい(終局レベルのため)
+    for fck, tau_a2 in st_mod.TAU_A2_CONCRETE.items():
+        assert st_mod.TAU_MAX_CONCRETE[fck] > tau_a2
+
+
+def test_web_crushing_capacity_formula():
+    """Suc = τmax・bw・d(RC部材なので Sp = 0)。"""
+    cap = shear_capacity_level2(
+        CIP, REBAR, 24, axial=1500.0, moment=2000.0, stirrup=STIRRUP
+    )
+    assert cap.tau_max == pytest.approx(3.2)
+    assert cap.web_crushing_capacity == pytest.approx(
+        3.2 * cap.width * 1000.0 * cap.effective_depth * 1000.0 / 1000.0
+    )
+
+
+def test_web_crushing_caps_the_capacity():
+    """斜引張鉄筋を増やしても Suc は超えられない。"""
+    modest = shear_capacity_level2(
+        CIP, REBAR, 24, 1500.0, 2000.0, stirrup=STIRRUP
+    )
+    heavy = shear_capacity_level2(
+        CIP, REBAR, 24, 1500.0, 2000.0,
+        stirrup=StirrupLayout(diameter_mm=22.0, spacing_mm=75.0),
+    )
+    # Sus は鉄筋量で伸びるが Suc は変わらない
+    assert heavy.total > modest.total
+    assert heavy.web_crushing_capacity == pytest.approx(
+        modest.web_crushing_capacity
+    )
+    # 過密配筋では斜め圧縮破壊が支配する
+    assert not modest.web_crushing_governs
+    assert heavy.web_crushing_governs
+    assert heavy.governing_capacity == pytest.approx(heavy.web_crushing_capacity)
+    assert modest.governing_capacity == pytest.approx(modest.total)
+
+
+def test_level2_checks_both_failure_modes():
+    """レベル2は斜引張破壊と斜め圧縮破壊の両方を照査すること。"""
+    from core.analysis.level2 import run_level2
+    from core.models import Footing, PileArrangement, SoilLayer, SoilProfile, SoilType
+
+    profile = SoilProfile(
+        layers=[
+            SoilLayer(name="As", soil_type=SoilType.SAND, thickness=10.0,
+                      n_value=15.0, gamma_t=18.0, gamma_sat=19.0),
+            SoilLayer(name="Ds", soil_type=SoilType.SAND, thickness=25.0,
+                      n_value=45.0, gamma_t=19.0, gamma_sat=20.0),
+        ],
+        gwl=2.0,
+    )
+    result = run_level2(
+        CIP,
+        PileArrangement(nx=3, ny=3, spacing_x=2.5, spacing_y=2.5),
+        Footing(width_x=8.0, width_y=8.0, height=1.5, embedment=2.0),
+        profile,
+        v_load=9000.0, h_load=4000.0, m_load=12000.0,
+        fck=24, rebar=REBAR, stirrup=STIRRUP, max_factor=1.0, steps=10,
+    )
+    names = [c.name for c in result.checks]
+    assert "杭体のせん断耐力(斜引張破壊)" in names
+    assert "コンクリートの斜め圧縮破壊" in names
+    # 同じ応答せん断力を2つの耐力と比べている
+    shear_checks = [c for c in result.checks if "破壊" in c.name]
+    assert len({round(c.demand, 6) for c in shear_checks}) == 1

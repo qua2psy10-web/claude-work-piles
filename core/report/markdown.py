@@ -597,7 +597,11 @@ def _level2_section(result: Level2Result) -> str:
             f"- τc = {cap.tau_c:.2f} N/mm²(表-5.2.1)、"
             f"b = {cap.width * 1000:,.0f} mm、d = {cap.effective_depth * 1000:,.0f} mm\n"
             f"- **Sc = {_num(cap.sc, 1)} kN**、**Ss = {_num(cap.ss, 1)} kN**、"
-            f"**Ps = {_num(cap.total, 1)} kN**\n"
+            f"斜引張破壊に対する耐力 **Sus = {_num(cap.total, 1)} kN**\n"
+            f"- ウェブコンクリートの圧壊に対する耐力 "
+            f"**Suc = τmax・bw・d = {cap.tau_max:.1f}×{cap.width * 1000:,.0f}×"
+            f"{cap.effective_depth * 1000:,.0f} = {_num(cap.web_crushing_capacity, 1)}"
+            " kN**(道示Ⅲ 4.3.4、表-4.3.2。RC部材なので Sp = 0)\n"
         )
         if cap.sigma_sy is not None:
             s.append(
@@ -606,6 +610,13 @@ def _level2_section(result: Level2Result) -> str:
             )
         else:
             s.append("- 帯鉄筋が未入力のため Ss = 0(コンクリートのみ)\n")
+        if cap.web_crushing_governs:
+            s.append(
+                f"\n> **斜め圧縮破壊が支配している**(Suc = "
+                f"{_num(cap.web_crushing_capacity, 0)} < Sus = "
+                f"{_num(cap.total, 0)} kN)。斜引張鉄筋を増やしても耐力は"
+                "伸びない。断面を大きくする等の対応が必要である。\n"
+            )
 
     if result.checks:
         s.append("\n### 7.3 照査結果\n")
