@@ -88,8 +88,43 @@ def test_check_judgement():
     assert push.judgement == ("OK" if push.ratio <= 1.0 else "NG")
 
 
-def test_unimplemented_stress_check_is_skipped_with_note():
-    """応力度照査が未実装の杭種でも、支持力・変位の照査は行い注記を残す。"""
+def test_unimplemented_stress_check_is_skipped_with_note(monkeypatch):
+    """応力度照査が未実装なら、支持力・変位の照査は行い注記を残すこと。
+
+    RC杭・SC杭を実装した結果、応力度照査が未実装なのは H鋼杭のみになった。
+    その H鋼杭は先端面積・周長も未実装で :func:`analyze` に入る前に止まる
+    ため、**この経路を通す杭種は現存しない**。それでも支持力・変位だけでも
+    返すという設計判断は残しているので、機構そのものを差し替えて確認する。
+    """
+    from core.section.checks import MaterialSpec
+
+    import core.analysis.stability as stability
+
+    def unimplemented(*args, **kwargs):
+        raise NotImplementedError("○○杭の応力度照査は未実装です")
+
+    monkeypatch.setattr(stability, "check_section", unimplemented)
+
+    pile, arrangement, footing, profile = sample_inputs()
+    material = MaterialSpec(fck=30)
+    loads = [FootingLoads(case=LoadCase.PERMANENT, v=3000.0, h=200.0, m=800.0)]
+    report = analyze(
+        pile, arrangement, footing, profile, loads, fck=30, material=material
+    )
+
+    case = report.cases[0]
+    # 支持力・変位の照査は行われている
+    assert {c.name for c in case.checks} >= {"押込み支持力", "水平変位"}
+    # 杭体の応力度照査は省略され、理由が注記される
+    assert case.stress_head is None
+    assert case.stress_max is None
+    assert any("応力度照査は未実装" in note for note in report.notes)
+    # 杭頭結合部の照査は杭種によらず行われる
+    assert case.pile_head is not None
+
+
+def test_rc_pile_stress_check_runs_end_to_end():
+    """RC杭は中空断面のひび割れ断面解析で応力度照査まで通ること。"""
     from core.section.checks import MaterialSpec
     from core.section.rc import RebarLayout
 
@@ -102,21 +137,49 @@ def test_unimplemented_stress_check_is_skipped_with_note():
         concrete_thickness=90.0,
     )
     material = MaterialSpec(
-        fck=30, rebar=RebarLayout(count=12, diameter_mm=25.0, cover_mm=60.0)
+        fck=30, rebar=RebarLayout(count=12, diameter_mm=19.0, cover_mm=40.0)
     )
     loads = [FootingLoads(case=LoadCase.PERMANENT, v=3000.0, h=200.0, m=800.0)]
     report = analyze(rc, arrangement, footing, profile, loads, fck=30, material=material)
 
     case = report.cases[0]
-    # 支持力・変位の照査は行われている
-    assert {c.name for c in case.checks} >= {"押込み支持力", "水平変位"}
-    # 杭体の応力度照査は省略され、理由が注記される
-    assert case.stress_head is None
-    assert case.stress_max is None
-    assert report.notes
-    assert any("RC杭" in note for note in report.notes)
-    # 杭頭結合部の照査は杭種によらず行われる
-    assert case.pile_head is not None
+    assert case.stress_head is not None
+    names = {c.name for c in case.stress_head.checks}
+    assert names == {"軸圧縮応力度", "コンクリート圧縮応力度", "鉄筋引張応力度"}
+    # 許容応力度は RC杭の表の値(σck の入力 30 には依存しない)
+    allowables = {c.name: c.allowable for c in case.stress_head.checks}
+    assert allowables["コンクリート圧縮応力度"] == pytest.approx(13.5)
+    assert allowables["軸圧縮応力度"] == pytest.approx(11.5)
+    assert any("ひび割れ断面" in n for n in case.stress_head.notes)
+
+
+def test_sc_pile_stress_check_runs_end_to_end():
+    """SC杭は合成断面の応力度照査まで通り、鋼管の未照合が注記されること。"""
+    from core.section.checks import MaterialSpec
+
+    _, arrangement, footing, profile = sample_inputs()
+    sc = PileSpec(
+        pile_type=PileType.SC,
+        method=ConstructionMethod.DRIVEN,
+        diameter=0.6,
+        length=18.0,
+        wall_thickness=9.0,
+        concrete_thickness=80.0,
+    )
+    material = MaterialSpec(fck=30, steel_grade="SKK400")
+    loads = [FootingLoads(case=LoadCase.PERMANENT, v=3000.0, h=200.0, m=800.0)]
+    report = analyze(sc, arrangement, footing, profile, loads, fck=30, material=material)
+
+    case = report.cases[0]
+    assert case.stress_head is not None
+    names = {c.name for c in case.stress_head.checks}
+    assert names == {
+        "軸圧縮応力度",
+        "コンクリート圧縮応力度",
+        "鋼管圧縮応力度",
+        "鋼管引張応力度",
+    }
+    assert any("原典未照合" in n for n in case.stress_head.notes)
 
 
 def test_phc_stress_check_runs_with_young_modulus_note():

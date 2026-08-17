@@ -133,8 +133,30 @@ def _check_section(pile: PileSpec, material: MaterialSpec) -> list[ValidationIss
     """杭断面と配筋の整合。"""
     issues: list[ValidationIssue] = []
     rebar = material.rebar
-    if rebar is not None and pile.pile_type == PileType.CAST_IN_PLACE:
+    # 軸方向鉄筋を配置する杭種(場所打ち杭・RC杭)。RC杭は中空断面なので
+    # 「肉厚の中に収まるか」の検査が追加される。
+    if rebar is not None and pile.pile_type in (
+        PileType.CAST_IN_PLACE, PileType.RC
+    ):
         radius = pile.diameter / 2.0 - rebar.cover_mm / 1000.0
+        if (
+            pile.pile_type == PileType.RC
+            and pile.concrete_thickness is not None
+            and radius > 0
+        ):
+            inner_radius = pile.diameter / 2.0 - pile.concrete_thickness / 1000.0
+            if radius <= inner_radius:
+                issues.append(
+                    ValidationIssue(
+                        Severity.ERROR,
+                        "軸方向鉄筋",
+                        f"鉄筋円の半径 {radius * 1000:.0f} mm が中空部の半径 "
+                        f"{inner_radius * 1000:.0f} mm 以下で、鉄筋が"
+                        "コンクリートの肉厚の外(中空部)になります",
+                        "かぶりを小さくするか、コンクリート部の肉厚を"
+                        "厚くしてください",
+                    )
+                )
         if radius <= 0:
             issues.append(
                 ValidationIssue(

@@ -510,6 +510,18 @@ def test_h_steel_reference_allowable_is_not_used_for_checks():
         "SM490相当": (185.0, 277.0),
     }
     assert PileType.H_STEEL in UNIMPLEMENTED_STRESS_CHECK
+    # 第31回に RC杭・SC杭を実装したので、未実装は H鋼杭のみ
+    assert set(UNIMPLEMENTED_STRESS_CHECK) == {PileType.H_STEEL}
+
+
+def test_sc_steel_allowable_reuses_the_verified_table_but_says_so():
+    """SC杭の鋼管には表-4.4.1 の値を流用しており、それを注記していること。"""
+    from core.section.checks import SC_STEEL_ALLOWABLE_NOTE
+
+    for keyword in ("表-4.4.1", "原典未照合", "sc_steel_allowable"):
+        assert keyword in SC_STEEL_ALLOWABLE_NOTE
+    # 流用元は第23回に原典照合済みの表そのもの(値を別に持っていない)
+    assert st.SIGMA_A_STEEL == {"SKK400": 140.0, "SKK490": 185.0}
 
 
 def test_steel_yield_points_are_consistent_with_allowables():

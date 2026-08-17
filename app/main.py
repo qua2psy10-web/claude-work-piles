@@ -629,6 +629,15 @@ def _render_stress_checks(case) -> None:
                 + f"、σc = {d.sigma_c:.2f} N/mm²、"
                 f"σs(引張) = {d.sigma_s_tension:.1f} N/mm²"
             )
+        stress_notes: list[str] = []
+        for stress in (case.stress_head, case.stress_max):
+            if stress is None:
+                continue
+            for note in stress.notes:
+                if note not in stress_notes:
+                    stress_notes.append(note)
+        for note in stress_notes:
+            st.caption(note)
 
     if case.shear is not None:
         sh = case.shear
@@ -998,10 +1007,12 @@ def main() -> None:
         with st.expander("既製杭・H鋼杭の断面(該当杭種のみ使用)"):
             st.caption(
                 "PHC杭・RC杭・SC杭は中空断面のコンクリート肉厚、"
-                "H鋼杭はH形断面の寸法が必要。**PHC杭は杭体の応力度照査に"
-                "対応済み**(全断面有効。地震時の許容曲げ引張には σce の入力が"
-                "必要)。RC杭・SC杭・H鋼杭は断面諸元の算定と安定計算はできるが、"
-                "**杭体の応力度照査は未実装**。"
+                "H鋼杭はH形断面の寸法が必要。**PHC杭・RC杭・SC杭は杭体の"
+                "応力度照査に対応済み**(PHC杭は全断面有効で、地震時の許容"
+                "曲げ引張には σce の入力が必要。RC杭は中空のひび割れ断面なので"
+                "軸方向鉄筋の入力が必要。SC杭は鋼管との合成断面で、鋼管部の"
+                "許容応力度の適用根拠は原典未照合)。H鋼杭は断面諸元の算定と"
+                "安定計算はできるが、**杭体の応力度照査は未実装**。"
             )
             ecol1, ecol2 = st.columns(2)
             with ecol1:
@@ -1151,6 +1162,17 @@ def main() -> None:
                     "常時は引張を許さない)。0 のときは未入力として扱う。"
                 ),
             )
+            sc_steel_allowable = st.number_input(
+                "SC杭 鋼管の許容応力度 (N/mm²、常時)", 0.0, 400.0,
+                value=0.0, step=5.0, key=f"scsa_{nonce}",
+                help=(
+                    "SC杭のみ使用。0 のときは鋼材の種類に対する道示Ⅳ 表-4.4.1 の"
+                    "値(SKK400 = 140、SKK490 = 185)を用いる。**同表が SC杭の"
+                    "外殻鋼管に及ぶことは原典未照合**なので、製品資料等で"
+                    "異なる値が示されている場合はここに入力する。"
+                    "荷重の組合せによる割増しは自動で乗じる。"
+                ),
+            )
             use_nf = st.checkbox(
                 "負の周面摩擦力を検討", value=False, key=f"nf_{nonce}",
                 help="圧密沈下層(N値10以下の粘性土)を自動判定する",
@@ -1296,6 +1318,9 @@ def main() -> None:
         ),
         effective_prestress=(
             effective_prestress if effective_prestress > 0 else None
+        ),
+        sc_steel_allowable=(
+            sc_steel_allowable if sc_steel_allowable > 0 else None
         ),
     )
 

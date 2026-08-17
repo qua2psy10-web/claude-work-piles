@@ -231,15 +231,20 @@ def test_cast_in_place_requires_rebar():
 
 
 def test_unimplemented_pile_type_raises():
-    rc = PileSpec(
-        pile_type=PileType.RC,
+    """H鋼杭は資料の警告により応力度照査を実装していない。"""
+    from core.models.pile import HSection
+
+    h_pile = PileSpec(
+        pile_type=PileType.H_STEEL,
         method=ConstructionMethod.DRIVEN,
-        diameter=0.6,
+        diameter=0.4,
         length=20.0,
-        concrete_thickness=90.0,
+        h_section=HSection(
+            height=400.0, width=400.0, web_thickness=13.0, flange_thickness=21.0
+        ),
     )
-    with pytest.raises(NotImplementedError):
-        check_section(rc, MATERIAL, LoadCase.PERMANENT, 0.0, 1000.0, 100.0)
+    with pytest.raises(NotImplementedError, match="H鋼杭"):
+        check_section(h_pile, MATERIAL, LoadCase.PERMANENT, 0.0, 1000.0, 100.0)
 
 
 # --- PHC杭(全断面有効) ---------------------------------------------------
@@ -549,3 +554,177 @@ def test_negative_friction_ng_when_excessive():
     )
     assert not result.ok
     assert result.judgement == "NG"
+
+
+# --- RC杭(中空のひび割れ断面) ---------------------------------------------
+
+RC = PileSpec(
+    pile_type=PileType.RC,
+    method=ConstructionMethod.PREBORING,
+    diameter=0.6,
+    length=20.0,
+    concrete_thickness=90.0,
+)
+RC_MATERIAL = MaterialSpec(
+    rebar=RebarLayout(count=12, diameter_mm=16.0, cover_mm=40.0)
+)
+
+
+def test_rc_pile_uses_the_precast_table_not_the_input_fck():
+    """許容応力度は RC杭の表の値で、MaterialSpec.fck に依存しないこと。"""
+    from core.standards import PRECAST_CONCRETE_ALLOWABLE
+
+    allow = PRECAST_CONCRETE_ALLOWABLE["RC杭"]
+    for fck in (24, 30, 40):
+        material = dataclasses.replace(RC_MATERIAL, fck=fck)
+        result = check_section(RC, material, LoadCase.PERMANENT, 0.0, 800.0, 60.0)
+        by_name = {c.name: c for c in result.checks}
+        assert by_name["コンクリート圧縮応力度"].allowable == pytest.approx(
+            allow.bending_compression
+        )
+        assert by_name["軸圧縮応力度"].allowable == pytest.approx(
+            allow.axial_compression
+        )
+
+
+def test_rc_pile_rebar_allowable_takes_the_underwater_value():
+    """鉄筋の許容引張応力度は常時に水中の値(小さい側)を用いること。"""
+    result = check_section(RC, RC_MATERIAL, LoadCase.PERMANENT, 0.0, 800.0, 300.0)
+    by_name = {c.name: c for c in result.checks}
+    assert by_name["鉄筋引張応力度"].allowable == pytest.approx(
+        SIGMA_SA_REBAR_STATIC["水中又は地下水位以下に設ける部材"]["SD345"]
+    )
+    # 一般の部材の 180 ではない(安全側を採っている)
+    assert by_name["鉄筋引張応力度"].allowable < 180.0
+    assert any("水中" in n for n in result.notes)
+
+
+def test_rc_pile_cracks_under_large_moment():
+    small = check_section(RC, RC_MATERIAL, LoadCase.PERMANENT, 0.0, 800.0, 20.0)
+    large = check_section(RC, RC_MATERIAL, LoadCase.LEVEL1_EQ, 0.0, 800.0, 300.0)
+    assert small.rc_detail.fully_compressed
+    assert small.rc_detail.sigma_s_tension == 0.0
+    assert not large.rc_detail.fully_compressed
+    assert large.rc_detail.sigma_s_tension > 0.0
+
+
+def test_rc_pile_requires_thickness_and_rebar():
+    no_thickness = RC.model_copy(update={"concrete_thickness": None})
+    with pytest.raises(ValueError, match="肉厚"):
+        check_section(no_thickness, RC_MATERIAL, LoadCase.PERMANENT, 0.0, 800.0, 60.0)
+    with pytest.raises(ValueError, match="軸方向鉄筋"):
+        check_section(RC, MaterialSpec(), LoadCase.PERMANENT, 0.0, 800.0, 60.0)
+
+
+def test_rc_pile_seismic_increase_applies_to_every_allowable():
+    permanent = check_section(RC, RC_MATERIAL, LoadCase.PERMANENT, 0.0, 800.0, 60.0)
+    seismic = check_section(RC, RC_MATERIAL, LoadCase.LEVEL1_EQ, 0.0, 800.0, 60.0)
+    increase = STRESS_INCREASE[LoadCase.LEVEL1_EQ.value]
+    p = {c.name: c.allowable for c in permanent.checks}
+    s = {c.name: c.allowable for c in seismic.checks}
+    for name in ("軸圧縮応力度", "コンクリート圧縮応力度"):
+        assert s[name] == pytest.approx(p[name] * increase)
+
+
+# --- SC杭(鋼管 + コンクリートの合成断面) ---------------------------------
+
+SC = PileSpec(
+    pile_type=PileType.SC,
+    method=ConstructionMethod.PREBORING,
+    diameter=0.6,
+    length=20.0,
+    wall_thickness=9.0,
+    concrete_thickness=80.0,
+)
+
+
+def test_sc_pile_checks_both_materials():
+    result = check_section(SC, MaterialSpec(), LoadCase.PERMANENT, 0.0, 1200.0, 80.0)
+    names = [c.name for c in result.checks]
+    assert names == [
+        "軸圧縮応力度",
+        "コンクリート圧縮応力度",
+        "鋼管圧縮応力度",
+        "鋼管引張応力度",
+    ]
+    by_name = {c.name: c for c in result.checks}
+    assert by_name["鋼管圧縮応力度"].allowable == pytest.approx(
+        SIGMA_A_STEEL["SKK400"]
+    )
+
+
+def test_sc_pile_steel_allowable_is_flagged_as_unverified():
+    """既定では表-4.4.1 を適用するが、適用根拠が未照合である旨を注記する。"""
+    from core.section.checks import SC_STEEL_ALLOWABLE_NOTE
+
+    result = check_section(SC, MaterialSpec(), LoadCase.PERMANENT, 0.0, 1200.0, 80.0)
+    assert SC_STEEL_ALLOWABLE_NOTE in result.notes
+    assert "原典未照合" in SC_STEEL_ALLOWABLE_NOTE
+
+
+def test_sc_pile_steel_allowable_can_be_given_directly():
+    material = MaterialSpec(sc_steel_allowable=120.0)
+    result = check_section(SC, material, LoadCase.LEVEL1_EQ, 0.0, 1200.0, 80.0)
+    by_name = {c.name: c for c in result.checks}
+    increase = STRESS_INCREASE[LoadCase.LEVEL1_EQ.value]
+    assert by_name["鋼管圧縮応力度"].allowable == pytest.approx(120.0 * increase)
+    assert any("利用者指定" in n for n in result.notes)
+    with pytest.raises(ValueError, match="鋼管の許容応力度"):
+        check_section(
+            SC, MaterialSpec(sc_steel_allowable=0.0),
+            LoadCase.PERMANENT, 0.0, 1200.0, 80.0,
+        )
+
+
+def test_sc_pile_steel_carries_tension_that_concrete_does_not():
+    """曲げが大きいと鋼管に引張が生じ、コンクリートは引張を負担しないこと。"""
+    result = check_section(SC, MaterialSpec(), LoadCase.LEVEL1_EQ, 0.0, 1400.0, 350.0)
+    assert not result.rc_detail.fully_compressed
+    assert result.rc_detail.sigma_s_tension > 0.0
+    # コンクリートの照査項目に引張は現れない(ひび割れ断面として扱うため)
+    assert not any("引張" in c.name and "鋼管" not in c.name for c in result.checks)
+
+
+def test_sc_pile_deducts_the_corrosion_allowance():
+    """腐食代を控除した板厚で解いているので、控除量を増やすと応力度が上がる。"""
+    thin = check_section(
+        SC, MaterialSpec(corrosion_mm=3.0), LoadCase.PERMANENT, 0.0, 1200.0, 200.0
+    )
+    thick = check_section(
+        SC, MaterialSpec(corrosion_mm=0.0), LoadCase.PERMANENT, 0.0, 1200.0, 200.0
+    )
+    assert thin.rc_detail.sigma_c > thick.rc_detail.sigma_c
+    assert any("腐食代 3 mm" in n for n in thin.notes)
+
+
+def test_sc_pile_requires_both_thicknesses():
+    with pytest.raises(ValueError, match="板厚"):
+        check_section(
+            SC.model_copy(update={"wall_thickness": None}),
+            MaterialSpec(), LoadCase.PERMANENT, 0.0, 1200.0, 80.0,
+        )
+    with pytest.raises(ValueError, match="肉厚"):
+        check_section(
+            SC.model_copy(update={"concrete_thickness": None}),
+            MaterialSpec(), LoadCase.PERMANENT, 0.0, 1200.0, 80.0,
+        )
+    # 肉厚が鋼管内径に対して大きすぎる
+    with pytest.raises(ValueError, match="中空断面"):
+        check_section(
+            SC.model_copy(update={"concrete_thickness": 300.0}),
+            MaterialSpec(), LoadCase.PERMANENT, 0.0, 1200.0, 80.0,
+        )
+
+
+def test_sc_pile_uses_the_h24_concrete_young_modulus():
+    """Ec は SC杭に定められた 3.5×10⁴ N/mm²(H24版)であること。"""
+    from core.standards import EC_SC_PILE_CONCRETE
+
+    result = check_section(SC, MaterialSpec(), LoadCase.PERMANENT, 0.0, 1200.0, 80.0)
+    assert any(f"{EC_SC_PILE_CONCRETE / 1000.0:,.0f} N/mm²" in n for n in result.notes)
+    # concrete_young を与えるとそちらが優先される
+    override = check_section(
+        SC.model_copy(update={"concrete_young": 4.0e7}),
+        MaterialSpec(), LoadCase.PERMANENT, 0.0, 1200.0, 80.0,
+    )
+    assert any("40,000 N/mm²" in n for n in override.notes)

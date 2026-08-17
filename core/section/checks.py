@@ -16,9 +16,14 @@ from core.section.rc import (
     RcStressResult,
     StirrupLayout,
     analyze_circular_rc,
+    analyze_circular_section,
+    steel_tube_fibers,
+    transformed_section,
 )
 from core.standards import (
     EC_CONCRETE,
+    EC_SC_PILE_CONCRETE,
+    E_STEEL,
     PHC_BENDING_TENSION_BY_PRESTRESS,
     PRECAST_CONCRETE_ALLOWABLE,
     REBAR_GRADES,
@@ -37,19 +42,28 @@ from core.standards import (
 # 断面諸元(A・I・E)は core.capacity.section で全杭種算定できるため、
 # 支持力・バネ定数・変位法・断面力分布は利用できる。
 UNIMPLEMENTED_STRESS_CHECK: dict[PileType, str] = {
-    PileType.SC: (
-        "鋼管とコンクリートの合成断面に対する応力度分担のモデル化と、"
-        "SC杭の鋼管部の許容応力度が未照合"
-    ),
-    PileType.RC: (
-        "中空断面のひび割れ断面解析(軸方向鉄筋の配置入力)が未実装"
-        "(コンクリートの許容応力度は照合済み)"
-    ),
     PileType.H_STEEL: (
         "H形鋼杭は断面・座屈・曲げ圧縮等の照査条件があり、"
         "許容応力度の値のみでは断面照査を行えない"
     ),
 }
+
+# SC杭の鋼管部の許容応力度についての注記。
+#
+# 道示Ⅳ 表-4.4.1(第23回に原典照合済み)は構造用鋼材の許容応力度を
+# SKK400 = 140、SKK490 = 185 N/mm² と定めており、SC杭の外殻鋼管の材質も
+# SKK400・SKK490 である。したがって同表を適用するのは自然だが、
+# **同表が SC杭の外殻鋼管に及ぶことそのものは原典で確認できていない**
+# (第31回に検索を試みたが、一次資料は egress 制限で取得できなかった)。
+# 値の向きも不明(真の許容値が低ければ本ソフトは非安全側になる)。
+SC_STEEL_ALLOWABLE_NOTE = (
+    "SC杭の外殻鋼管の許容応力度は、道示Ⅳ 表-4.4.1(構造用鋼材)の値を"
+    "同じ材質(SKK400・SKK490)に対して適用している。**同表が SC杭の外殻"
+    "鋼管に及ぶことは原典未照合**であり、真の許容値が小さければ非安全側に"
+    "なる。メーカーの製品資料等で確認し、異なる場合は "
+    "MaterialSpec.sc_steel_allowable に直接指定すること"
+    "(docs/VERIFICATION.md 参照)。"
+)
 
 
 # 許容値が 0 の照査で「応力なし」とみなす閾値 (N/mm2)。
@@ -91,6 +105,8 @@ class PileStressResult:
     moment: float  # 曲げモーメント (kN·m)
     checks: list[StressCheck] = field(default_factory=list)
     rc_detail: RcStressResult | None = None
+    # 断面モデルの前提・原典未照合の扱いなど、利用者に伝える必要のある注記
+    notes: list[str] = field(default_factory=list)
 
     @property
     def all_ok(self) -> bool:
@@ -110,6 +126,10 @@ class MaterialSpec:
     # PHC杭の有効プレストレス σce (N/mm2)。地震時の許容曲げ引張応力度が
     # この値で決まるため、PHC杭に引張が生じる地震時の照査では必須。
     effective_prestress: float | None = None
+    # SC杭の外殻鋼管の許容応力度 (N/mm2、常時の基本値)。省略すると
+    # steel_grade に対する道示Ⅳ 表-4.4.1 の値を用いる
+    # (:data:`SC_STEEL_ALLOWABLE_NOTE` の注記が付く)。
+    sc_steel_allowable: float | None = None
 
 
 def check_section(
@@ -133,6 +153,10 @@ def check_section(
         return _check_steel_pipe(pile, material, increase, depth, axial, moment)
     if pile.pile_type == PileType.PHC:
         return _check_phc(pile, material, increase, case, depth, axial, moment)
+    if pile.pile_type == PileType.RC:
+        return _check_rc(pile, material, increase, case, depth, axial, moment)
+    if pile.pile_type == PileType.SC:
+        return _check_sc(pile, material, increase, depth, axial, moment)
     raise NotImplementedError(
         f"{pile.pile_type.value}の応力度照査は未実装です。理由: "
         f"{UNIMPLEMENTED_STRESS_CHECK.get(pile.pile_type, '許容応力度が未照合')}"
@@ -314,6 +338,193 @@ def _check_cast_in_place(
     ]
     return PileStressResult(
         depth=depth, axial=axial, moment=moment, checks=checks, rc_detail=detail
+    )
+
+
+def _check_rc(
+    pile: PileSpec,
+    material: MaterialSpec,
+    increase: float,
+    case: LoadCase,
+    depth: float,
+    axial: float,
+    moment: float,
+) -> PileStressResult:
+    """RC杭(中空円形のひび割れ断面)の応力度照査。
+
+    PHC杭と違いプレストレスがないため、**ひび割れ断面**として軸方向鉄筋の
+    引張を照査する。コンクリートは引張を負担しない(表-4.2.7 に RC杭の
+    許容曲げ引張応力度の規定がないことと整合する)。
+
+    コンクリートのヤング係数は RC杭の設計基準強度 σck = 40 N/mm²
+    (:data:`core.standards.PRECAST_CONCRETE_ALLOWABLE` の値)に対する
+    表引きとし、``PileSpec.concrete_young`` があればそちらを優先する。
+    ヤング係数比は場所打ち杭と同じ一定値 15(道示Ⅲ 3.3)を用いる。
+    """
+    if pile.concrete_thickness is None:
+        raise ValueError(
+            "RC杭の照査にはコンクリート部の肉厚 concrete_thickness (mm) の"
+            "入力が必要です"
+        )
+    if material.rebar is None:
+        raise ValueError("RC杭の照査には軸方向鉄筋の入力が必要です")
+
+    allow = PRECAST_CONCRETE_ALLOWABLE["RC杭"]
+    fck = int(allow.fck)
+    if pile.concrete_young is None and fck not in EC_CONCRETE:
+        raise ValueError(
+            f"RC杭の σck={fck} のヤング係数が未定義です。"
+            "PileSpec.concrete_young に直接指定してください"
+        )
+    ec = pile.concrete_young or EC_CONCRETE[fck]
+
+    inner_diameter = pile.diameter - 2.0 * pile.concrete_thickness / 1000.0
+    if inner_diameter <= 0:
+        raise ValueError(
+            f"肉厚 {pile.concrete_thickness:g} mm が外径 {pile.diameter:.3f} m に"
+            "対して大きすぎます(中空断面になりません)"
+        )
+    detail = analyze_circular_rc(
+        diameter=pile.diameter,
+        rebar=material.rebar,
+        ec=ec,
+        n_ratio=YOUNG_MODULUS_RATIO_RC,
+        axial=axial,
+        moment=moment,
+        inner_diameter=inner_diameter,
+    )
+
+    area_t, _ = transformed_section(
+        pile.diameter, material.rebar, YOUNG_MODULUS_RATIO_RC, inner_diameter
+    )
+    sigma_axial = axial / area_t / 1000.0  # kN, m → N/mm2
+    # 表-4.3.1 の「水中又は地下水位以下に設ける部材」の区分は、工場製作の
+    # 既製杭に及ぶかが判然としない。許容値が小さくなる側(160)を採る。
+    sigma_sa = rebar_tension_allowable(
+        material.rebar_grade, case, underwater=True, increase=increase
+    )
+    checks = [
+        StressCheck("軸圧縮応力度", sigma_axial, allow.axial_compression * increase),
+        StressCheck(
+            "コンクリート圧縮応力度", detail.sigma_c, allow.bending_compression * increase
+        ),
+        StressCheck("鉄筋引張応力度", detail.sigma_s_tension, sigma_sa),
+    ]
+    notes = [
+        f"RC杭はひび割れ断面(コンクリートの引張を無視)として照査している。"
+        f"σck = {fck} N/mm²(表-4.2.7 の RC杭の値)、"
+        f"Ec = {ec / 1000.0:,.0f} N/mm²、n = {YOUNG_MODULUS_RATIO_RC:g}。",
+        "鉄筋の許容引張応力度は、地震の影響を含まない組合せで"
+        "「水中又は地下水位以下に設ける部材」の値を用いている"
+        "(工場製作の既製杭にこの区分が及ぶかは判然としないため、"
+        "許容値が小さくなる安全側を採った)。",
+    ]
+    return PileStressResult(
+        depth=depth, axial=axial, moment=moment, checks=checks,
+        rc_detail=detail, notes=notes,
+    )
+
+
+def _check_sc(
+    pile: PileSpec,
+    material: MaterialSpec,
+    increase: float,
+    depth: float,
+    axial: float,
+    moment: float,
+) -> PileStressResult:
+    """SC杭(外殻鋼管 + 中空コンクリート)の合成断面の応力度照査。
+
+    外殻鋼管を円環の鋼材繊維、内側のコンクリートを円環断面としてモデル化し、
+    **コンクリートは圧縮のみ有効**なひび割れ断面として解く(表-4.2.8 に
+    SC杭の許容曲げ引張応力度の規定がないことと整合し、鋼管の応力度を
+    大きく評価する安全側の扱いでもある)。
+
+    換算の基準はコンクリートとし、鋼管を n = Es/Ec 倍で算入する。これは
+    断面諸元(:func:`core.capacity.section.pile_section`)が鋼を基準に
+    整理しているのと逆だが、EI = Ec・Ic + Es・Is は同じである。
+
+    .. warning::
+       鋼管部の許容応力度は :data:`SC_STEEL_ALLOWABLE_NOTE` のとおり
+       **適用の根拠が原典未照合**である。
+    """
+    if pile.wall_thickness is None:
+        raise ValueError("SC杭の照査には鋼管の板厚 wall_thickness の入力が必要です")
+    if pile.concrete_thickness is None:
+        raise ValueError(
+            "SC杭の照査にはコンクリート部の肉厚 concrete_thickness (mm) の"
+            "入力が必要です"
+        )
+    t_steel = (pile.wall_thickness - material.corrosion_mm) / 1000.0
+    if t_steel <= 0:
+        raise ValueError(
+            f"腐食代 {material.corrosion_mm:g} mm 控除後の板厚が 0 以下です"
+        )
+
+    concrete_outer = pile.diameter - 2.0 * t_steel
+    concrete_inner = concrete_outer - 2.0 * pile.concrete_thickness / 1000.0
+    if concrete_inner <= 0:
+        raise ValueError(
+            f"コンクリート部の肉厚 {pile.concrete_thickness:g} mm が"
+            f"鋼管内径 {concrete_outer:.3f} m に対して大きすぎます"
+            "(中空断面になりません)"
+        )
+
+    ec = pile.concrete_young or EC_SC_PILE_CONCRETE
+    n_ratio = E_STEEL / ec
+    fibers = steel_tube_fibers(pile.diameter, t_steel)
+    detail = analyze_circular_section(
+        diameter=concrete_outer,
+        fibers=fibers,
+        ec=ec,
+        n_ratio=n_ratio,
+        axial=axial,
+        moment=moment,
+        inner_diameter=concrete_inner,
+    )
+    area_t, _ = transformed_section(
+        concrete_outer, None, n_ratio, concrete_inner, fibers
+    )
+    sigma_axial = axial / area_t / 1000.0
+
+    allow = PRECAST_CONCRETE_ALLOWABLE["SC杭"]
+    if material.sc_steel_allowable is not None:
+        if material.sc_steel_allowable <= 0:
+            raise ValueError("鋼管の許容応力度は正の値である必要があります")
+        sigma_sa_base = material.sc_steel_allowable
+        steel_note = (
+            f"SC杭の外殻鋼管の許容応力度は利用者指定の "
+            f"{sigma_sa_base:g} N/mm²(常時の基本値)を用いている。"
+        )
+    else:
+        if material.steel_grade not in SIGMA_A_STEEL:
+            raise ValueError(
+                f"鋼材 {material.steel_grade} の許容応力度が未定義です。"
+                f"対応材質: {sorted(SIGMA_A_STEEL)}"
+            )
+        sigma_sa_base = SIGMA_A_STEEL[material.steel_grade]
+        steel_note = SC_STEEL_ALLOWABLE_NOTE
+    sigma_sa = sigma_sa_base * increase
+
+    checks = [
+        StressCheck("軸圧縮応力度", sigma_axial, allow.axial_compression * increase),
+        StressCheck(
+            "コンクリート圧縮応力度", detail.sigma_c, allow.bending_compression * increase
+        ),
+        StressCheck("鋼管圧縮応力度", detail.sigma_s_compression, sigma_sa),
+        StressCheck("鋼管引張応力度", detail.sigma_s_tension, sigma_sa),
+    ]
+    notes = [
+        f"SC杭は鋼管とコンクリートの合成断面として、コンクリートを圧縮のみ"
+        f"有効なひび割れ断面として解いている(σck = {allow.fck:g} N/mm²、"
+        f"Ec = {ec / 1000.0:,.0f} N/mm²、n = Es/Ec = {n_ratio:.2f}、"
+        f"腐食代 {material.corrosion_mm:g} mm 控除後の板厚 "
+        f"{t_steel * 1000.0:.1f} mm)。",
+        steel_note,
+    ]
+    return PileStressResult(
+        depth=depth, axial=axial, moment=moment, checks=checks,
+        rc_detail=detail, notes=notes,
     )
 
 

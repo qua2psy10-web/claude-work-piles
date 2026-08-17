@@ -442,6 +442,17 @@ def _case_section(case: CaseResult) -> str:
                 stress_rows,
             )
         )
+        stress_notes: list[str] = []
+        for stress in (case.stress_head, case.stress_max):
+            if stress is None:
+                continue
+            for note in stress.notes:
+                if note not in stress_notes:
+                    stress_notes.append(note)
+        if stress_notes:
+            s.append("\n")
+            for note in stress_notes:
+                s.append(f"- {note}\n")
 
     if case.shear is not None:
         sh = case.shear

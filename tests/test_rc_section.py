@@ -116,3 +116,216 @@ def test_excessive_cover_rejected():
     bad = RebarLayout(count=12, diameter_mm=25.0, cover_mm=600.0)
     with pytest.raises(ValueError, match="かぶり"):
         bad.radius(D)
+
+
+# --- 中空断面・鋼管合成断面 --------------------------------------------------
+
+
+def _annulus_properties(outer: float, inner: float) -> tuple[float, float]:
+    """円環の (断面積, 断面二次モーメント)。厳密解。"""
+    return (
+        math.pi * (outer**2 - inner**2) / 4.0,
+        math.pi * (outer**4 - inner**4) / 64.0,
+    )
+
+
+def test_concrete_integrals_of_an_annulus_match_the_closed_form():
+    """円環でも全断面圧縮の積分が厳密解に一致すること。"""
+    radius, inner = 0.5, 0.3
+    s_area, s_moment = _concrete_integrals(radius, -radius, inner, divisions=2000)
+    area, inertia = _annulus_properties(2.0 * radius, 2.0 * inner)
+    assert s_area == pytest.approx(radius * area, rel=1e-4)
+    assert s_moment == pytest.approx(inertia, rel=1e-4)
+
+
+def test_steel_tube_fibers_preserve_area_and_first_moment_exactly():
+    """鋼管の繊維分割は断面積と断面一次モーメントを厳密に保つこと。"""
+    from core.section.rc import steel_tube_fibers
+
+    d, t = 0.6, 0.012
+    fibers = steel_tube_fibers(d, t)
+    area, inertia = _annulus_properties(d, d - 2.0 * t)
+    assert sum(f.area for f in fibers) == pytest.approx(area, rel=1e-12)
+    assert sum(f.area * f.y for f in fibers) == pytest.approx(0.0, abs=1e-12)
+    # 断面二次モーメントのみ分割による誤差を持つ(集中質量化のため)
+    lumped = sum(f.area * f.y**2 for f in fibers)
+    assert lumped == pytest.approx(inertia, rel=1e-3)
+    assert lumped < inertia  # 各区間の自身まわりの慣性を落としている分
+    # 鋼管はコンクリートの外側にあるので (n−1) 控除の対象にしない
+    assert all(not f.embedded for f in fibers)
+
+
+def test_steel_tube_fibers_reject_invalid_geometry():
+    from core.section.rc import steel_tube_fibers
+
+    with pytest.raises(ValueError):
+        steel_tube_fibers(0.6, 0.0)
+    with pytest.raises(ValueError, match="円環"):
+        steel_tube_fibers(0.6, 0.4)
+    with pytest.raises(ValueError, match="分割数"):
+        steel_tube_fibers(0.6, 0.012, divisions=4)
+
+
+HOLLOW_REBAR = RebarLayout(count=12, diameter_mm=19.0, cover_mm=40.0)
+
+
+def test_hollow_section_uncracked_matches_the_transformed_section_formula():
+    """中空断面の全断面圧縮を σ = N/At ± M·y/It と突合する。"""
+    from core.section.rc import transformed_section
+
+    inner = 0.42  # D=0.6、肉厚 90mm
+    area_t, inertia_t = transformed_section(D, HOLLOW_REBAR, N_RATIO, inner)
+    # 換算断面積・断面二次モーメントを手計算で組み立てる
+    area_c, inertia_c = _annulus_properties(D, inner)
+    ys = HOLLOW_REBAR.positions(D)
+    bar = HOLLOW_REBAR.bar_area
+    assert area_t == pytest.approx(
+        area_c + (N_RATIO - 1.0) * len(ys) * bar
+    )
+    assert inertia_t == pytest.approx(
+        inertia_c + (N_RATIO - 1.0) * bar * sum(y**2 for y in ys)
+    )
+
+    n_load = 1500.0
+    m_load = 20.0  # 核の内側に収まる小さな偏心
+    result = analyze_circular_rc(
+        D, HOLLOW_REBAR, EC, N_RATIO, n_load, m_load, inner_diameter=inner
+    )
+    assert result.fully_compressed
+    assert result.sigma_c == pytest.approx(
+        (n_load / area_t + m_load * (D / 2.0) / inertia_t) / 1000.0
+    )
+
+
+def test_hollowing_the_section_raises_the_concrete_stress():
+    """同じ外径・同じ断面力なら、中空にしたほうがコンクリート応力度が大きい。
+
+    一方**鉄筋の引張応力度は下がる**。中空にすると圧縮域の面積が減るので
+    中立軸が引張側へ深く入り(圧縮域を広げて軸力を負担するため)、引張鉄筋が
+    中立軸に近づいてひずみが小さくなるからである。直感に反するが、釣合いは
+    :func:`test_hollow_cracked_section_satisfies_equilibrium` で独立に
+    確認している。
+    """
+    solid = analyze_circular_rc(D, HOLLOW_REBAR, EC, N_RATIO, 1500.0, 300.0)
+    hollow = analyze_circular_rc(
+        D, HOLLOW_REBAR, EC, N_RATIO, 1500.0, 300.0, inner_diameter=0.42
+    )
+    assert hollow.sigma_c > solid.sigma_c
+    assert hollow.compression_depth > solid.compression_depth
+    assert hollow.sigma_s_tension < solid.sigma_s_tension
+
+
+def test_rebar_must_sit_inside_the_concrete_wall():
+    # D=1.0、内径 0.42 → 肉厚 290mm。かぶり 300mm では中空部に落ちる
+    outside = RebarLayout(count=12, diameter_mm=19.0, cover_mm=300.0)
+    with pytest.raises(ValueError, match="中空部"):
+        analyze_circular_rc(
+            D, outside, EC, N_RATIO, 1500.0, 300.0, inner_diameter=0.42
+        )
+    # 肉厚の中に収まっていれば通る
+    inside = RebarLayout(count=12, diameter_mm=19.0, cover_mm=120.0)
+    assert inside.radius(D) > 0.42 / 2.0
+    analyze_circular_rc(
+        D, inside, EC, N_RATIO, 1500.0, 300.0, inner_diameter=0.42
+    )
+
+
+def test_inner_diameter_must_be_smaller_than_the_outer():
+    from core.section.rc import analyze_circular_section
+
+    with pytest.raises(ValueError, match="内径"):
+        analyze_circular_section(
+            D, HOLLOW_REBAR.fibers(D), EC, N_RATIO, 1500.0, 300.0,
+            inner_diameter=D,
+        )
+
+
+def _equilibrium(
+    outer: float,
+    inner: float,
+    fibers: list,
+    ec: float,
+    n_ratio: float,
+    result,
+    strips: int = 20000,
+) -> tuple[float, float]:
+    """求まった (中立軸, 曲率) から軸力とモーメントを積み直す。
+
+    断面の幅を独立に組み立てて数値積分するので、解法そのものとは別の経路で
+    釣合いを確かめられる。返り値は (N, M) (kN, kN·m)。
+    """
+    r_out, r_in = outer / 2.0, inner / 2.0
+    y_n, k = result.neutral_axis_y, result.curvature
+    if result.fully_compressed:
+        y_n = -math.inf
+
+    n_sum = 0.0
+    m_sum = 0.0
+    h = 2.0 * r_out / strips
+    for i in range(strips):
+        y = -r_out + (i + 0.5) * h
+        if y <= y_n:
+            continue
+        width = 2.0 * math.sqrt(max(0.0, r_out**2 - y**2))
+        if r_in > 0.0 and abs(y) < r_in:
+            width -= 2.0 * math.sqrt(r_in**2 - y**2)
+        sigma = ec * k * (y - y_n)  # kN/m2
+        force = sigma * width * h
+        n_sum += force
+        m_sum += force * y
+    for fiber in fibers:
+        ratio = n_ratio
+        if fiber.embedded and fiber.y > y_n:
+            ratio = n_ratio - 1.0
+        sigma = ec * k * (fiber.y - y_n)
+        force = ratio * sigma * fiber.area
+        n_sum += force
+        m_sum += force * fiber.y
+    return n_sum, m_sum
+
+
+def test_hollow_cracked_section_satisfies_equilibrium():
+    """中空のひび割れ断面が、独立な数値積分で釣合っていること。"""
+    inner = 0.42
+    n_load, m_load = 1500.0, 350.0
+    result = analyze_circular_rc(
+        D, HOLLOW_REBAR, EC, N_RATIO, n_load, m_load, inner_diameter=inner
+    )
+    assert not result.fully_compressed
+    n_calc, m_calc = _equilibrium(
+        D, inner, HOLLOW_REBAR.fibers(D), EC, N_RATIO, result
+    )
+    assert n_calc == pytest.approx(n_load, rel=1e-3)
+    assert m_calc == pytest.approx(m_load, rel=1e-3)
+
+
+def test_composite_steel_tube_section_satisfies_equilibrium():
+    """SC杭型(外側鋼管 + 中空コンクリート)でも釣合っていること。"""
+    from core.section.rc import analyze_circular_section, steel_tube_fibers
+
+    d_out, t = 0.6, 0.008
+    concrete_outer = d_out - 2.0 * t
+    concrete_inner = concrete_outer - 2.0 * 0.080
+    ec = 3.5e7
+    n_ratio = 2.0e8 / ec
+    fibers = steel_tube_fibers(d_out, t)
+
+    n_load, m_load = 1400.0, 350.0
+    result = analyze_circular_section(
+        diameter=concrete_outer,
+        fibers=fibers,
+        ec=ec,
+        n_ratio=n_ratio,
+        axial=n_load,
+        moment=m_load,
+        inner_diameter=concrete_inner,
+    )
+    assert not result.fully_compressed
+    # 鋼管は引張・圧縮の両方を負担する
+    assert result.sigma_s_tension > 0.0
+    assert result.sigma_s_compression > 0.0
+    n_calc, m_calc = _equilibrium(
+        concrete_outer, concrete_inner, fibers, ec, n_ratio, result
+    )
+    assert n_calc == pytest.approx(n_load, rel=1e-3)
+    assert m_calc == pytest.approx(m_load, rel=1e-3)

@@ -297,3 +297,29 @@ def test_report_shows_the_group_pile_factor_only_when_it_applies():
         analyze(pile, wide, footing, profile, sample_loads()),
     )
     assert "群杭の補正係数" not in text
+
+
+def test_stress_check_notes_reach_the_report():
+    """断面モデルの前提・未照合の注記が計算書に出ること(SC杭)。"""
+    project = sample_project()
+    sc = PileSpec(
+        pile_type=PileType.SC,
+        method=ConstructionMethod.PREBORING,
+        diameter=0.6,
+        length=18.0,
+        wall_thickness=9.0,
+        concrete_thickness=80.0,
+    )
+    report = analyze(
+        sc,
+        project.arrangement,
+        project.footing,
+        project.soil_profile,
+        project.loads,
+        fck=24,
+        material=MaterialSpec(fck=24),
+    )
+    md = build_report(project, report)
+    assert "鋼管圧縮応力度" in md
+    assert "原典未照合" in md
+    assert "合成断面" in md

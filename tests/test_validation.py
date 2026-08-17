@@ -188,8 +188,8 @@ def test_tight_but_feasible_bar_spacing_is_a_warning():
     assert not [i for i in issues if i.is_error]
 
 
-def test_rebar_geometry_is_only_checked_for_cast_in_place_piles():
-    """既製杭では RebarLayout は円形配置を表さないので対象外。"""
+def test_rebar_geometry_is_not_checked_for_piles_without_axial_rebar():
+    """PHC杭の PC鋼材は RebarLayout の円形配置ではないので対象外。"""
     phc = PileSpec(
         pile_type=PileType.PHC,
         method=ConstructionMethod.DRIVEN,
@@ -201,6 +201,37 @@ def test_rebar_geometry_is_only_checked_for_cast_in_place_piles():
         fck=30, rebar=RebarLayout(count=200, diameter_mm=25.0, cover_mm=500.0)
     )
     assert issues_for(pile=phc, material=material) == []
+
+
+def _rc_pile(concrete_thickness=90.0):
+    return PileSpec(
+        pile_type=PileType.RC,
+        method=ConstructionMethod.PREBORING,
+        diameter=0.6,
+        length=18.0,
+        concrete_thickness=concrete_thickness,
+    )
+
+
+def test_rc_pile_rebar_must_stay_inside_the_concrete_wall():
+    """中空のRC杭では、鉄筋が肉厚の外(中空部)に出ることをエラーにする。
+
+    外径 600 mm・肉厚 90 mm なので中空部の半径は 210 mm。かぶり 250 mm では
+    鉄筋円の半径が 50 mm となり、コンクリートが存在しない位置になる。
+    """
+    material = MaterialSpec(
+        fck=30, rebar=RebarLayout(count=12, diameter_mm=16.0, cover_mm=250.0)
+    )
+    issues = issues_for(pile=_rc_pile(), material=material)
+    assert fields(issues, Severity.ERROR) == {"軸方向鉄筋"}
+    assert "中空部" in issues[0].message
+
+
+def test_rc_pile_with_rebar_in_the_wall_passes():
+    material = MaterialSpec(
+        fck=30, rebar=RebarLayout(count=12, diameter_mm=16.0, cover_mm=40.0)
+    )
+    assert issues_for(pile=_rc_pile(), material=material) == []
 
 
 def test_wide_stirrup_spacing_is_a_warning():
