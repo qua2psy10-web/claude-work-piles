@@ -394,7 +394,8 @@ STEEL = PileSpec(
 
 def test_yield_moment_steel_pipe_hand_calculation():
     section = pile_section(STEEL)
-    z = section.inertia / 0.5
+    # 断面係数は腐食しろを外面から控除した外径で求める(0.998 m)
+    z = section.inertia / ((1.0 - 2 * 0.001) / 2)
     axial = 2000.0
     expected = (
         SIGMA_Y_STEEL["SKK400"] - axial / section.area / 1000.0
@@ -547,7 +548,7 @@ def test_plastic_moment_without_axial_force():
     from core.analysis.level2 import plastic_moment_steel_pipe
 
     t = 0.011  # 12mm − 腐食代 1mm
-    r = (1.0 - t) / 2.0
+    r = (1.0 - 2 * 0.001 - t) / 2.0  # 平均半径(外径は 0.998 m)
     expected = 4.0 * SIGMA_Y_STEEL["SKK400"] * t * r**2 * 1000.0
     assert plastic_moment_steel_pipe(STEEL, 0.0) == pytest.approx(expected)
 
@@ -560,7 +561,10 @@ def test_plastic_moment_agrees_with_exact_hollow_section():
     )
 
     t = 0.011
-    exact = plastic_section_modulus_hollow(1.0, t) * SIGMA_Y_STEEL["SKK400"] * 1000.0
+    exact = (
+        plastic_section_modulus_hollow(1.0 - 2 * 0.001, t)
+        * SIGMA_Y_STEEL["SKK400"] * 1000.0
+    )
     assert plastic_moment_steel_pipe(STEEL, 0.0) == pytest.approx(exact, rel=0.01)
 
 
@@ -591,7 +595,7 @@ def test_plastic_moment_vanishes_at_squash_load():
     from core.analysis.level2 import plastic_moment_steel_pipe
 
     t = 0.011
-    r = (1.0 - t) / 2.0
+    r = (1.0 - 2 * 0.001 - t) / 2.0
     squash = SIGMA_Y_STEEL["SKK400"] * 2 * math.pi * r * t * 1000.0
     assert plastic_moment_steel_pipe(STEEL, squash * 0.999) == pytest.approx(
         0.0, abs=squash * 1e-3

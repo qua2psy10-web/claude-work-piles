@@ -46,6 +46,43 @@ def _concrete_young(fck: int, override: float | None = None) -> float:
     return EC_CONCRETE[fck]
 
 
+def corroded_tube(
+    outer_diameter: float,
+    wall_thickness_mm: float,
+    corrosion_mm: float = CORROSION_ALLOWANCE_MM,
+) -> tuple[float, float]:
+    """腐食しろを**外面から**控除した (外径 (m), 板厚 (m)) を返す。
+
+    鋼管杭の腐食は外周面で生じるため、腐食しろは外径を 2 × 腐食しろ 減らし、
+    板厚を 腐食しろ 減らす。**内径は変わらない**。
+
+        外径 → D − 2c,  板厚 → t − c,  内径 → (D − 2c)− 2(t − c)= D − 2t
+
+    .. important::
+       かつては外径を変えず板厚だけを減らしていた(= 内面が腐食するモデル)。
+       これは断面二次モーメントを 0.6%、断面係数を 0.4% 過大に評価する
+       **非安全側**の誤りだった(φ1000・t14・c1 の場合)。第32回に、H29版の
+       設計計算例の Is = 0.00488 m⁴ が外面腐食のモデルと 6桁まで一致すること
+       から修正した。**H24版の条文そのものは未照合**(確度B)。
+
+    杭径 D そのもの(水平方向地盤反力係数の載荷幅、周長、先端面積)には
+    腐食しろを反映しない。計算例も B' の算定には D = 1.000 m を用いている。
+    """
+    if wall_thickness_mm <= 0:
+        raise ValueError("板厚は正の値である必要があります")
+    if corrosion_mm < 0:
+        raise ValueError("腐食しろは 0 以上である必要があります")
+    t = (wall_thickness_mm - corrosion_mm) / 1000.0
+    if t <= 0:
+        raise ValueError(f"腐食代 {corrosion_mm} mm 控除後の板厚が 0 以下です")
+    outer = outer_diameter - 2.0 * corrosion_mm / 1000.0
+    if outer <= 2.0 * t:
+        raise ValueError(
+            f"腐食しろ控除後の外径 {outer:.3f} m が板厚に対して小さすぎます"
+        )
+    return outer, t
+
+
 def hollow_circle(outer: float, thickness: float) -> tuple[float, float]:
     """中空円形断面の (断面積, 断面二次モーメント)。単位は m, m2, m4。"""
     inner = outer - 2.0 * thickness
@@ -113,10 +150,8 @@ def pile_section(
     if pile.pile_type in STEEL_TUBE_TYPES:
         if pile.wall_thickness is None:
             raise ValueError("鋼管杭は板厚 wall_thickness の入力が必要です")
-        t = (pile.wall_thickness - corrosion_mm) / 1000.0
-        if t <= 0:
-            raise ValueError(f"腐食代 {corrosion_mm} mm 控除後の板厚が 0 以下です")
-        area, inertia = hollow_circle(d, t)
+        outer, t = corroded_tube(d, pile.wall_thickness, corrosion_mm)
+        area, inertia = hollow_circle(outer, t)
         return PileSection(area=area, inertia=inertia, young=E_STEEL)
 
     if pile.pile_type in HOLLOW_CONCRETE_TYPES:
@@ -176,14 +211,14 @@ def _sc_section(pile: PileSpec, corrosion_mm: float) -> PileSection:
         raise ValueError(
             "SC杭はコンクリート部の肉厚 concrete_thickness (mm) の入力が必要です"
         )
-    t_steel = (pile.wall_thickness - corrosion_mm) / 1000.0
-    if t_steel <= 0:
-        raise ValueError(f"腐食代 {corrosion_mm} mm 控除後の板厚が 0 以下です")
+    steel_outer, t_steel = corroded_tube(
+        pile.diameter, pile.wall_thickness, corrosion_mm
+    )
+    steel_area, steel_inertia = hollow_circle(steel_outer, t_steel)
 
-    steel_area, steel_inertia = hollow_circle(pile.diameter, t_steel)
-
-    # コンクリートは鋼管の内側に位置する
-    concrete_outer = pile.diameter - 2.0 * t_steel
+    # コンクリートは鋼管の内側に位置する。腐食は外面で生じるので、鋼管の
+    # 内径 = コンクリートの外径は腐食しろによらず D − 2t のままである。
+    concrete_outer = steel_outer - 2.0 * t_steel
     concrete_area, concrete_inertia = hollow_circle(
         concrete_outer, pile.concrete_thickness / 1000.0
     )

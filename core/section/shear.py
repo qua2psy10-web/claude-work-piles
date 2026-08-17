@@ -55,7 +55,11 @@ from dataclasses import dataclass, field
 from core.models.loads import LoadCase
 from core.models.pile import PileSpec, PileType
 from core.section.rc import RebarLayout, StirrupLayout
-from core.capacity.section import CORROSION_ALLOWANCE_MM, hollow_circle
+from core.capacity.section import (
+    CORROSION_ALLOWANCE_MM,
+    corroded_tube,
+    hollow_circle,
+)
 from core.standards import (
     REBAR_YIELD_POINT,
     SHEAR_CC_FOUNDATION,
@@ -632,10 +636,10 @@ def check_steel_pipe_shear(
             f"対応材質: {sorted(TAU_A_STEEL)}"
         )
 
-    t = pile.wall_thickness - corrosion_mm
-    if t <= 0:
-        raise ValueError(f"腐食代 {corrosion_mm} mm 控除後の板厚が 0 以下です")
-    area, _ = hollow_circle(pile.diameter, t / 1000.0)  # m2
+    # 腐食しろは外面から控除する(外径が 2c 減り、内径は変わらない)
+    outer, t_m = corroded_tube(pile.diameter, pile.wall_thickness, corrosion_mm)
+    t = t_m * 1000.0
+    area, _ = hollow_circle(outer, t_m)  # m2
 
     # kN, m2 → N/mm2 は 1/1000
     tau_mean = abs(shear) / area / 1000.0

@@ -733,11 +733,12 @@ STEEL = PileSpec(
 
 
 def test_steel_pipe_shear_is_two_v_over_a():
-    """薄肉円管の最大せん断応力度 τmax = 2V/A。腐食代1mmを控除する。"""
+    """薄肉円管の最大せん断応力度 τmax = 2V/A。腐食代1mmを外面から控除する。"""
     r = check_steel_pipe_shear(STEEL, "SKK400", LoadCase.PERMANENT, 0.0, 1000.0)
+    outer = 1.0 - 2 * 0.001
     t = 0.011
-    inner = 1.0 - 2 * t
-    area = math.pi * (1.0**2 - inner**2) / 4.0
+    inner = outer - 2 * t
+    area = math.pi * (outer**2 - inner**2) / 4.0
 
     assert r.thickness == pytest.approx(11.0)
     assert r.area == pytest.approx(area)
@@ -757,7 +758,7 @@ def test_steel_pipe_shear_matches_the_exact_hollow_circle_solution():
             update={"diameter": diameter, "wall_thickness": wall}
         )
         r = check_steel_pipe_shear(pile, "SKK400", LoadCase.PERMANENT, 0.0, 1000.0)
-        ro = diameter / 2.0
+        ro = diameter / 2.0 - 0.001  # 腐食しろは外面から
         ri = ro - r.thickness / 1000.0
         inertia = math.pi * (ro**4 - ri**4) / 4.0
         q = 2.0 / 3.0 * (ro**3 - ri**3)

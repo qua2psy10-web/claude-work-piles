@@ -56,11 +56,17 @@ def test_steel_pipe_section_deducts_corrosion():
         wall_thickness=12.0,
     )
     section = pile_section(pile, corrosion_mm=1.0)
-    t = 0.011  # 12mm - 1mm腐食代
-    d_in = 1.0 - 2 * t
-    assert section.area == pytest.approx(math.pi * (1.0 - d_in**2) / 4)
-    assert section.inertia == pytest.approx(math.pi * (1.0 - d_in**4) / 64)
+    # 腐食は**外面**で生じる: 外径 1.000 → 0.998、板厚 12 → 11mm、内径は不変
+    d_out = 1.0 - 2 * 0.001
+    t = 0.011
+    d_in = d_out - 2 * t
+    assert d_in == pytest.approx(1.0 - 2 * 0.012)  # 内径は腐食前と同じ
+    assert section.area == pytest.approx(math.pi * (d_out**2 - d_in**2) / 4)
+    assert section.inertia == pytest.approx(math.pi * (d_out**4 - d_in**4) / 64)
     assert section.young == E_STEEL
+    # 外径を減らさない(内面が腐食する)モデルより小さいこと(第32回の修正)
+    inner_only = math.pi * (1.0**4 - (1.0 - 2 * t) ** 4) / 64
+    assert section.inertia < inner_only
 
 
 def test_steel_pipe_requires_thickness():
@@ -267,3 +273,110 @@ def test_e0_from_n_value():
         CIP_PILE, section, sand_profile(), 2.0, LoadCase.PERMANENT
     )
     assert springs.e0 == pytest.approx(2800.0 * 10.0)
+
+
+# --- H29版の設計計算例との突合(第32回) -------------------------------------
+#
+# 出典: 鋼管杭・鋼矢板技術協会「平成29年道路橋示方書に基づく鋼管杭による
+# 橋脚基礎の設計計算例」Edition 1.1(平成30年11月)表-3.3.7・表-3.3.8。
+#
+# **H29版は限界状態設計法・部分係数設計法であり、本ソフトが対象とする H24版の
+# 許容応力度設計法とは体系が異なる。** ただし kH の算定式そのもの
+#
+#     kH = (α・E0 / 0.3)・(B'/0.3)^(-3/4),  B' = √(D/β),  β = ⁴√(kH・D/(4EI))
+#
+# は両版で同一であり、計算例には各層の αE0 と kH が数値で示されている。
+# **式と手順が同じ部分に限って**突合する。部分係数・制限値・軸方向バネ定数
+# (H29版は式が別)などは対象にしない。
+
+
+def test_kh_chain_matches_the_h29_worked_example():
+    """BH の決定と kH の算定が計算例と一致すること(丸め以内)。
+
+    計算例は 1/β 区間の平均 αE0 = 5,600 kN/m²(地震の影響を含まない)から
+    β = 0.17853 1/m、1/β = 5.6014 m、B' = 2.367 m、kH = 3,965 kN/m³ を得ている。
+    """
+    from core.capacity.springs import PileSection as _Section
+
+    section = _Section(area=1.0, inertia=0.00488, young=2.0e8)
+    pile = PileSpec(
+        pile_type=PileType.STEEL_PIPE,
+        method=ConstructionMethod.INNER_DIGGING,
+        diameter=1.0,
+        length=39.9,
+        wall_thickness=14.0,
+    )
+    profile = SoilProfile(
+        layers=[
+            SoilLayer(
+                name="上部", soil_type=SoilType.SAND, thickness=6.9, n_value=2.0,
+                e0=5600.0, gamma_t=18.0, gamma_sat=19.0,
+            ),
+            SoilLayer(
+                name="下部", soil_type=SoilType.SAND, thickness=33.0, n_value=50.0,
+                e0=140000.0, gamma_t=19.0, gamma_sat=20.0,
+            ),
+        ],
+        gwl=0.0,
+    )
+    springs = lateral_springs(
+        pile, section, profile, 0.0, LoadCase.PERMANENT
+    )
+    assert springs.beta == pytest.approx(0.17853, rel=1e-4)
+    assert 1.0 / springs.beta == pytest.approx(5.6014, rel=1e-4)
+    assert springs.bh == pytest.approx(2.367, rel=1e-3)
+    assert springs.kh == pytest.approx(3965.0, rel=1e-3)
+
+
+def test_layered_kh_matches_the_h29_worked_example_table():
+    """層ごとの kH が、共通の B' から計算例の表と一致すること。
+
+    計算例の表-3.3.8 は層ごとに αE0 を変えながら、換算載荷幅の列は全層で
+    B' = 2.367 m である。**BH を層ごとに求め直さない**という第29・30回の
+    扱いが、独立の資料で裏付けられている。
+    地震の影響を含む列は含まない列のちょうど 2 倍(α が 2 倍)になっている。
+    """
+    from core.capacity.springs import kh_from_e0
+
+    bh = 2.367
+    # 計算例の表から読み取れた (αE0, kH) の対応。表の並び順には依存しない
+    table = {
+        5600: 3965, 11200: 7931,
+        17500: 12392, 35000: 24784,
+        30000: 21244, 60000: 42487,
+        45000: 31865, 90000: 63731,
+        64400: 45603, 128800: 91206,
+        140000: 99137, 280000: 198274,
+        162400: 114999,
+    }
+    for alpha_e0, expected in table.items():
+        assert kh_from_e0(alpha_e0, bh, alpha=1.0) == pytest.approx(
+            expected, rel=2e-4
+        ), alpha_e0
+    # 「地震の影響を含む」列は「含まない」列のちょうど 2 倍(α の比)
+    for base in (5600, 17500, 30000, 45000, 64400, 140000):
+        assert 2 * base in table
+        assert table[2 * base] == pytest.approx(2.0 * table[base], rel=1e-3)
+
+
+def test_section_inertia_matches_the_h29_worked_example():
+    """腐食しろ控除後の断面二次モーメントが計算例の Is と一致すること。
+
+    計算例は φ1000・t14mm・腐食しろ1mm に対し Is = 0.00488 m⁴ としている。
+    これは**外面から**腐食しろを控除した断面(外径 0.998 m、板厚 13 mm、
+    内径 0.972 m)の値である。外径を変えずに板厚だけ減らすと 0.004909 m⁴ と
+    0.6% 大きくなり、非安全側になる(第32回に修正)。
+    """
+    pile = PileSpec(
+        pile_type=PileType.STEEL_PIPE,
+        method=ConstructionMethod.INNER_DIGGING,
+        diameter=1.0,
+        length=39.9,
+        wall_thickness=14.0,
+    )
+    section = pile_section(pile, corrosion_mm=1.0)
+    assert section.inertia == pytest.approx(0.00488, rel=1e-3)
+    # 外径を変えないモデルの値と、その差
+    wrong = math.pi * (1.0**4 - (1.0 - 2 * 0.013) ** 4) / 64
+    assert wrong == pytest.approx(0.004909, rel=1e-3)
+    assert section.inertia < wrong

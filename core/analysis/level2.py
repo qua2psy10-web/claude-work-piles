@@ -45,7 +45,11 @@ from core.analysis.displacement import PileReaction, pile_x_coordinates
 from core.analysis.section_forces import distribution
 from core.capacity.bearing import BearingCapacity, compute_bearing_capacity
 from core.capacity.lateral_limit import p_hu
-from core.capacity.section import CORROSION_ALLOWANCE_MM, pile_section
+from core.capacity.section import (
+    CORROSION_ALLOWANCE_MM,
+    corroded_tube,
+    pile_section,
+)
 from core.capacity.springs import (
     LateralSprings,
     PileSection,
@@ -679,7 +683,9 @@ def yield_moment_steel_pipe(
             f"対応材質: {sorted(SIGMA_Y_STEEL)}"
         )
     sigma_y = SIGMA_Y_STEEL[steel_grade]
-    section_modulus = section.inertia / (pile.diameter / 2.0)
+    # 断面係数は腐食しろ控除後の外径で求める(section も控除後の断面)
+    outer, _ = corroded_tube(pile.diameter, pile.wall_thickness, corrosion_mm)
+    section_modulus = section.inertia / (outer / 2.0)
     sigma_axial = axial / section.area / 1000.0  # N/mm2
     if sigma_axial >= sigma_y:
         raise ValueError(
@@ -982,10 +988,9 @@ def plastic_moment_steel_pipe(
     if pile.wall_thickness is None:
         raise ValueError("鋼管杭は板厚 wall_thickness の入力が必要です")
 
-    t = (pile.wall_thickness - corrosion_mm) / 1000.0
-    if t <= 0:
-        raise ValueError(f"腐食代 {corrosion_mm} mm 控除後の板厚が 0 以下です")
-    r = (pile.diameter - t) / 2.0  # 平均半径
+    # 腐食しろは外面から控除する(外径が 2c 減り、内径は変わらない)
+    outer, t = corroded_tube(pile.diameter, pile.wall_thickness, corrosion_mm)
+    r = (outer - t) / 2.0  # 平均半径
     sigma_y = SIGMA_Y_STEEL[steel_grade]
 
     area = 2.0 * math.pi * r * t

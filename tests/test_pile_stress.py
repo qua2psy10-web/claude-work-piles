@@ -47,12 +47,16 @@ MATERIAL = MaterialSpec(
 
 
 def test_steel_pipe_stress_hand_calculation():
-    """σ = N/A ± M/Z。板厚12mm − 腐食代1mm = 11mm。"""
+    """σ = N/A ± M/Z。腐食しろ 1mm を**外面から**控除する。
+
+    外径 1.000 → 0.998 m、板厚 12 → 11 mm、内径は 0.976 m のまま。
+    """
+    d_out = 1.0 - 2 * 0.001
     t = 0.011
-    d_in = 1.0 - 2 * t
-    area = math.pi * (1.0 - d_in**2) / 4
-    inertia = math.pi * (1.0 - d_in**4) / 64
-    z = inertia / 0.5
+    d_in = d_out - 2 * t
+    area = math.pi * (d_out**2 - d_in**2) / 4
+    inertia = math.pi * (d_out**4 - d_in**4) / 64
+    z = inertia / (d_out / 2)
 
     result = check_section(
         STEEL, MATERIAL, LoadCase.PERMANENT, depth=0.0, axial=2000.0, moment=300.0

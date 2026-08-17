@@ -8,7 +8,11 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from core.capacity.section import CORROSION_ALLOWANCE_MM, hollow_circle
+from core.capacity.section import (
+    CORROSION_ALLOWANCE_MM,
+    corroded_tube,
+    hollow_circle,
+)
 from core.models.loads import LoadCase
 from core.models.pile import PileSpec, PileType
 from core.section.rc import (
@@ -455,13 +459,11 @@ def _check_sc(
             "SC杭の照査にはコンクリート部の肉厚 concrete_thickness (mm) の"
             "入力が必要です"
         )
-    t_steel = (pile.wall_thickness - material.corrosion_mm) / 1000.0
-    if t_steel <= 0:
-        raise ValueError(
-            f"腐食代 {material.corrosion_mm:g} mm 控除後の板厚が 0 以下です"
-        )
-
-    concrete_outer = pile.diameter - 2.0 * t_steel
+    steel_outer, t_steel = corroded_tube(
+        pile.diameter, pile.wall_thickness, material.corrosion_mm
+    )
+    # 腐食は外面で生じるので、鋼管の内径 = コンクリートの外径は変わらない
+    concrete_outer = steel_outer - 2.0 * t_steel
     concrete_inner = concrete_outer - 2.0 * pile.concrete_thickness / 1000.0
     if concrete_inner <= 0:
         raise ValueError(
@@ -472,7 +474,7 @@ def _check_sc(
 
     ec = pile.concrete_young or EC_SC_PILE_CONCRETE
     n_ratio = E_STEEL / ec
-    fibers = steel_tube_fibers(pile.diameter, t_steel)
+    fibers = steel_tube_fibers(steel_outer, t_steel)
     detail = analyze_circular_section(
         diameter=concrete_outer,
         fibers=fibers,
@@ -538,13 +540,11 @@ def _check_steel_pipe(
 ) -> PileStressResult:
     if pile.wall_thickness is None:
         raise ValueError("鋼管杭の照査には板厚の入力が必要です")
-    t = (pile.wall_thickness - material.corrosion_mm) / 1000.0
-    if t <= 0:
-        raise ValueError("腐食代控除後の板厚が 0 以下です")
-    d_out = pile.diameter
-    d_in = d_out - 2.0 * t
-    area = math.pi * (d_out**2 - d_in**2) / 4.0
-    inertia = math.pi * (d_out**4 - d_in**4) / 64.0
+    # 腐食しろは外面から控除する(外径が 2c 減り、内径は変わらない)
+    d_out, t = corroded_tube(
+        pile.diameter, pile.wall_thickness, material.corrosion_mm
+    )
+    area, inertia = hollow_circle(d_out, t)
     section_modulus = inertia / (d_out / 2.0)
 
     # kN, m → N/mm2 は 1/1000

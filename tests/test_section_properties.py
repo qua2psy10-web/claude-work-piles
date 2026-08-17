@@ -84,8 +84,9 @@ def test_direct_young_modulus_applies_to_the_sc_transformed_section():
     pile = sc_pile().model_copy(update={"concrete_young": ec})
     section = pile_section(pile, fck=80)
     t_steel = (9.0 - 1.0) / 1000.0
-    steel = hollow_circle(0.6, t_steel)
-    concrete = hollow_circle(0.6 - 2 * t_steel, 0.08)
+    steel_outer = 0.6 - 2 * 0.001  # 腐食しろは外面から
+    steel = hollow_circle(steel_outer, t_steel)
+    concrete = hollow_circle(steel_outer - 2 * t_steel, 0.08)
     assert section.area == pytest.approx(steel[0] + concrete[0] / (E_STEEL / ec))
     # Ec が大きいほどコンクリートの寄与が大きい
     softer = pile_section(
@@ -125,9 +126,13 @@ def test_sc_pile_is_transformed_section():
     """SC杭は鋼基準の換算断面(コンクリートを 1/n 倍)。"""
     pile = sc_pile()
     section = pile_section(pile, fck=30)
-    t_steel = (9.0 - 1.0) / 1000.0  # 腐食代控除
-    steel = hollow_circle(0.6, t_steel)
-    concrete = hollow_circle(0.6 - 2 * t_steel, 0.08)
+    # 腐食しろは外面から控除する: 外径 0.600 → 0.598、板厚 9 → 8mm。
+    # 鋼管の内径 = コンクリートの外径は 0.600 − 2×0.009 = 0.582 のまま
+    t_steel = (9.0 - 1.0) / 1000.0
+    steel_outer = 0.6 - 2 * 0.001
+    steel = hollow_circle(steel_outer, t_steel)
+    concrete = hollow_circle(steel_outer - 2 * t_steel, 0.08)
+    assert steel_outer - 2 * t_steel == pytest.approx(0.6 - 2 * 0.009)
     n = E_STEEL / EC_SC_PILE_CONCRETE
 
     assert section.young == E_STEEL
@@ -146,8 +151,9 @@ def test_sc_pile_stiffness_equals_ec_ic_plus_es_is():
     """
     section = pile_section(sc_pile())
     t_steel = (9.0 - 1.0) / 1000.0
-    area_s, inertia_s = hollow_circle(0.6, t_steel)
-    area_c, inertia_c = hollow_circle(0.6 - 2 * t_steel, 0.08)
+    steel_outer = 0.6 - 2 * 0.001  # 腐食しろは外面から
+    area_s, inertia_s = hollow_circle(steel_outer, t_steel)
+    area_c, inertia_c = hollow_circle(steel_outer - 2 * t_steel, 0.08)
     ec = EC_SC_PILE_CONCRETE
 
     assert section.young * section.inertia == pytest.approx(
