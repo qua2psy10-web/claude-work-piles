@@ -1,6 +1,7 @@
 """レベル2地震時照査(プッシュオーバー解析)のテスト。"""
 import math
 
+import numpy as np
 import pytest
 
 from core.analysis.level2 import (
@@ -737,6 +738,10 @@ def test_bnwf_with_huge_limits_converges_to_elastic_pushover():
 
     BNWF は離散化した数値解なので厳密一致はしない。分割を細かくすると
     弾性解(Chang の式に基づく K1〜K4)との差が 2次で減ることを確認する。
+
+    Chang の式は地盤を一様と仮定するため、この突合では BNWF 側も
+    ``bnwf_layered_kh=False`` として単一の kH を共有させる必要がある
+    (節点ごとの kH は別の解に収束するので、この比較には使えない)。
     """
     from core.analysis.level2 import run_level2
 
@@ -751,7 +756,7 @@ def test_bnwf_with_huge_limits_converges_to_elastic_pushover():
         # KEP を極端に大きくすれば pHU は事実上無限大
         bnwf = run_level2(
             STEEL, ARRANGEMENT, FOOTING, ground_with_kep(k_ep=1.0e6),
-            bnwf_elements=n, **kwargs
+            bnwf_elements=n, bnwf_layered_kh=False, **kwargs
         )
         assert bnwf.response.plastic_ground_nodes == 0
         errors.append(
@@ -802,7 +807,12 @@ def test_falls_back_to_elastic_springs_without_kep():
 
 
 def test_ground_plasticity_softens_the_foundation():
-    """地盤が塑性化すると、同じ水平力に対する変位が弾性解析より大きくなる。"""
+    """地盤が塑性化すると、同じ水平力に対する変位が弾性解析より大きくなる。
+
+    塑性化の効果だけを見るため、kH は弾性解析と同じ単一値に揃える
+    (節点ごとの kH は深部を硬く評価するので、揃えないと2つの効果が
+    打ち消し合って何を見ているのか分からなくなる)。
+    """
     from core.analysis.level2 import run_level2
 
     kwargs = dict(
@@ -813,10 +823,124 @@ def test_ground_plasticity_softens_the_foundation():
     )
     # 小さい KEP → pHU が小さく、浅部の地盤が塑性化する
     plastic = run_level2(
-        STEEL, ARRANGEMENT, FOOTING, ground_with_kep(k_ep=0.3), **kwargs
+        STEEL, ARRANGEMENT, FOOTING, ground_with_kep(k_ep=0.3),
+        bnwf_layered_kh=False, **kwargs
     )
     assert plastic.response.plastic_ground_nodes > 0
     assert plastic.response.u > elastic.response.u
+
+
+# --- 節点ごとの kH ----------------------------------------------------------
+
+
+def test_layered_kh_follows_each_layer_and_shares_one_bh():
+    """節点ごとの kH が当該深度の地層の E0 に比例し、BH は共通であること。"""
+    from core.analysis.level2 import build_bnwf_model
+    from core.capacity.section import pile_section
+    from core.capacity.springs import kh_from_e0, lateral_springs
+    from core.standards import E0_FROM_N
+
+    ground = ground_with_kep()
+    section = pile_section(STEEL)
+    springs = lateral_springs(
+        STEEL, section, ground, FOOTING.embedment, LoadCase.LEVEL1_EQ
+    )
+    model = build_bnwf_model(
+        STEEL, ARRANGEMENT, FOOTING, ground, section, springs, n_elements=100
+    )
+    depths = model.front.node_depths + FOOTING.embedment
+    for depth, kh in zip(depths, model.front.kh):
+        n_value = ground.layer_at(min(float(depth), ground.total_depth)).n_value
+        assert kh == pytest.approx(
+            kh_from_e0(E0_FROM_N * n_value, springs.bh, springs.alpha)
+        )
+    # 2層あるので kH は 2 値をとり、その比は N値の比に等しい
+    assert set(np.round(model.front.kh, 6)).__len__() == 2
+    assert model.front.kh.max() / model.front.kh.min() == pytest.approx(45.0 / 15.0)
+
+
+def test_layered_kh_is_the_default_and_can_be_switched_off():
+    from core.analysis.level2 import build_bnwf_model
+    from core.capacity.section import pile_section
+    from core.capacity.springs import lateral_springs
+
+    ground = ground_with_kep()
+    section = pile_section(STEEL)
+    springs = lateral_springs(
+        STEEL, section, ground, FOOTING.embedment, LoadCase.LEVEL1_EQ
+    )
+    args = (STEEL, ARRANGEMENT, FOOTING, ground, section, springs)
+    layered = build_bnwf_model(*args, n_elements=100)
+    uniform = build_bnwf_model(*args, n_elements=100, layered=False)
+
+    assert layered.kh_range[0] < layered.kh_range[1]
+    assert uniform.kh_range == (springs.kh, springs.kh)
+    # 単一値は 1/β 区間(浅部)の平均なので、深い硬い層の kH より小さい
+    assert layered.kh_range[1] > springs.kh
+
+
+def test_layered_kh_is_reported_with_its_range():
+    from core.analysis.level2 import run_level2
+
+    result = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, ground_with_kep(),
+        v_load=9000.0, h_load=3000.0, m_load=12000.0, max_factor=1.0, steps=10,
+    )
+    note = next(n for n in result.notes if "節点ごとに" in n and "kH" in n)
+    assert "換算載荷幅 BH" in note
+    assert "常時の条件で定めた共通値" in note
+
+
+def test_layered_kh_changes_the_response():
+    """節点ごとの kH が結果を実際に動かすこと(単なる注記ではない)。"""
+    from core.analysis.level2 import run_level2
+
+    kwargs = dict(
+        v_load=9000.0, h_load=3000.0, m_load=12000.0, max_factor=1.0, steps=10,
+    )
+    ground = ground_with_kep(k_ep=1.0e6)  # 塑性化させない
+    layered = run_level2(STEEL, ARRANGEMENT, FOOTING, ground, **kwargs)
+    uniform = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, ground, bnwf_layered_kh=False, **kwargs
+    )
+    assert layered.response.plastic_ground_nodes == 0
+    assert uniform.response.plastic_ground_nodes == 0
+    # 深部が硬く評価されるので、水平変位は小さくなる
+    assert layered.response.u < uniform.response.u
+    assert layered.response.u != pytest.approx(uniform.response.u, rel=1e-6)
+
+
+def test_a_layer_without_stiffness_leaves_that_node_without_resistance():
+    """N値 0 の層では kH = 0 となり、その節点だけ抵抗を失うこと。
+
+    単一の kH では平均に埋もれてしまう状態である。
+    """
+    from core.analysis.bnwf import PileLateralModel
+    from core.capacity.springs import layered_kh
+
+    ground = SoilProfile(
+        layers=[
+            SoilLayer(
+                name="埋土", soil_type=SoilType.SAND, thickness=3.0, n_value=0.0,
+                gamma_t=17.0, gamma_sat=18.0, k_ep=3.0,
+            ),
+            SoilLayer(
+                name="Ds", soil_type=SoilType.SAND, thickness=27.0, n_value=45.0,
+                gamma_t=19.0, gamma_sat=20.0, k_ep=3.0,
+            ),
+        ],
+        gwl=2.0,
+    )
+    depths = [0.0, 1.0, 2.0, 5.0, 10.0]
+    values = layered_kh(ground, depths, bh=1.0, alpha=2.0)
+    assert values[:2] == [0.0, 0.0]
+    assert all(v > 0.0 for v in values[3:])
+
+    # 全節点が 0 なら解けないので明示的に弾く
+    model = PileLateralModel(1.0e6, 1.0, 30.0, np.array([0.0, 1.0e4, 2.0e4]), n_elements=2)
+    assert model.spring_k[0] == 0.0
+    with pytest.raises(ValueError, match="すべて 0"):
+        PileLateralModel(1.0e6, 1.0, 30.0, np.zeros(3), n_elements=2)
 
 
 def test_front_row_and_back_rows_differ_in_sand():

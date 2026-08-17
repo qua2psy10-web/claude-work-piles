@@ -52,6 +52,7 @@ from core.capacity.springs import (
     axial_spring,
     group_pile_factor,
     lateral_springs,
+    layered_kh,
 )
 from core.models.loads import LoadCase
 from core.models.pile import Footing, PileArrangement, PileSpec, PileType
@@ -76,8 +77,12 @@ from core.standards import (
 LIMITATION_ELASTIC_GROUND = (
     "水平地盤反力を弾性(杭頭バネ K1〜K4)のまま解いており、水平地盤反力度の"
     "上限値 pHU による塑性化を取り込んでいない。したがって降伏水平力を過大に、"
-    "降伏変位を過小に評価するおそれがある。地層に KEP を入力すると分布バネ"
-    "モデル(BNWF)で解析され、この制限は解消する。"
+    "降伏変位を過小に評価するおそれがある。"
+    "また水平方向地盤反力係数 kH は、Chang の式が地盤を一様と仮定するため、"
+    "設計地盤面から 1/β の区間で平均した E0 による**単一の値**しか持てず、"
+    "深度ごと・地層ごとの kH を反映できない。"
+    "地層に KEP を入力すると分布バネモデル(BNWF)で解析され、"
+    "いずれの制限も解消する。"
 )
 
 # 分布バネモデルで解いた場合の注意
@@ -103,8 +108,7 @@ LIMITATIONS: tuple[str, ...] = (
     "考慮する。",
     "**水平方向地盤反力係数** kH は α = 2 で算定している"
     "(レベル1・レベル2とも α = 2 であることは第29回に照合済み)。"
-    "ただし深度ごと・地層ごとの kH は求めておらず、設計地盤面から 1/β の"
-    "区間で平均した E0 による単一の kH を用いている。"
+    "換算載荷幅 BH は常時の条件で定めた共通値であり、地層ごとに求め直さない。"
     "(なお道示Ⅴ の**設計水平震度** kH(khc・khg)とは別量である。"
     "こちらは慣性力・土圧の算定に用いるもので、本ソフトはレベル2の荷重を"
     "利用者から与えられる前提のため算定していない。)",
@@ -761,6 +765,11 @@ class BnwfLateralModel(LateralModel):
     def plastic_ground_nodes(self) -> int:
         return self._plastic
 
+    @property
+    def kh_range(self) -> tuple[float, float]:
+        """節点ごとの kH の (最小, 最大) (kN/m3)。一定なら同じ値になる。"""
+        return float(self.front.kh.min()), float(self.front.kh.max())
+
 
 def build_bnwf_model(
     pile: PileSpec,
@@ -771,11 +780,18 @@ def build_bnwf_model(
     springs: LateralSprings,
     reduction: SoilReduction | None = None,
     n_elements: int = 50,
+    layered: bool = True,
 ) -> BnwfLateralModel:
     """杭・地盤の諸元から BNWF モデルを組み立てる。
 
     節点ごとの pHU を :func:`core.capacity.lateral_limit.p_hu` で求める。
     杭先端が地盤モデルの下端より深い場合は、最下層の値を延長して用いる。
+
+    水平方向地盤反力係数 kH も**節点ごと**に、当該深度の地層の変形係数 E0 から
+    :func:`core.capacity.springs.layered_kh` で求める。換算載荷幅 BH は
+    ``springs`` が常時の条件で定めた共通値を用いる。``layered`` を偽にすると
+    従来どおり ``springs.kh``(1/β 区間で平均した E0 による単一値)を杭長に
+    わたって一定として扱う。
 
     ``reduction`` を与えると、液状化の低減係数 DE を**節点ごとに**バネ定数と
     上限値に乗じる。杭頭バネ K1〜K4 による弾性解析では深度平均に頼るしか
@@ -784,6 +800,15 @@ def build_bnwf_model(
     depths = np.linspace(0.0, pile.length, n_elements + 1) + footing.embedment
     xs = np.array(pile_x_coordinates(arrangement), dtype=float)
     front_mask = xs >= xs.max() - 1.0e-9
+    # 群杭の補正係数 μ は分布バネモデルには適用しないため、springs 側で
+    # 1.0 になっている。ここでも乗じない。
+    kh: float | np.ndarray = (
+        np.array(
+            layered_kh(profile, [float(d) for d in depths], springs.bh, springs.alpha)
+        )
+        if layered
+        else springs.kh
+    )
 
     def limits(front_row: bool) -> np.ndarray:
         return np.array(
@@ -810,7 +835,7 @@ def build_bnwf_model(
             ei=section.ei,
             diameter=pile.diameter,
             length=pile.length,
-            kh=springs.kh,
+            kh=kh,
             limits=limits(front_row),
             reduction=de,
             n_elements=n_elements,
@@ -1008,6 +1033,7 @@ def run_level2(
     reduction: SoilReduction | None = None,
     use_bnwf: bool = True,
     bnwf_elements: int = 100,
+    bnwf_layered_kh: bool = True,
     max_factor: float = 3.0,
     steps: int = 120,
 ) -> Level2Result:
@@ -1028,6 +1054,11 @@ def run_level2(
     ``bnwf_elements`` は杭の分割数。既定の 100 分割では、弾性状態で
     Chang の解析解に対し杭頭モーメントで 1% 程度の差になる(2次収束するので
     分割を倍にすると誤差は約 1/4)。
+
+    ``bnwf_layered_kh`` が真(既定)なら、分布バネモデルの kH を**節点ごとに**
+    当該深度の地層の E0 から算定する。偽にすると杭長にわたって単一の kH
+    (1/β 区間で平均した E0 による値)を用いる。**偽は Chang の解析解との
+    突合(一様地盤の仮定を共有させる)のための経路であり、設計では真を使う。**
     """
     section = pile_section(pile, fck=fck)
     # 軸方向バネの上限 Pu・Pt は周面摩擦力に依存するので、DE は分布バネ
@@ -1147,11 +1178,24 @@ def run_level2(
         lateral = build_bnwf_model(
             pile, arrangement, footing, profile, section, springs,
             reduction=reduction, n_elements=bnwf_elements,
+            layered=bnwf_layered_kh,
         )
         extra_notes.append(
             f"水平方向は分布バネモデル(BNWF、{bnwf_elements} 分割)で解析し、"
             "地盤反力度が pHU に達した節点は頭打ちとして扱っている"
             "(杭頭バネ K1〜K4 による弾性解析ではない)。"
+        )
+        kh_min, kh_max = lateral.kh_range
+        extra_notes.append(
+            f"水平方向地盤反力係数 kH は**節点ごとに**当該深度の地層の E0 から"
+            f"算定している(kH = {kh_min:,.0f}〜{kh_max:,.0f} kN/m³。"
+            f"換算載荷幅 BH = {springs.bh:.3f} m は常時の条件で定めた共通値)。"
+            + (
+                f"参考: 1/β 区間で平均した E0 による単一値は "
+                f"{springs.kh:,.0f} kN/m³。"
+                if kh_max > kh_min
+                else "杭長にわたって同一の地層のため単一値と一致する。"
+            )
         )
 
     result = analyze_level2(

@@ -124,6 +124,53 @@ def _de_factor(
     return reduction.mean_factor(embedment, embedment + depth_range)
 
 
+def e0_at(profile: SoilProfile, depth: float) -> float:
+    """深度 ``depth`` の地層の変形係数 E0 (kN/m2)。
+
+    層に E0 が入力されていれば優先し、無ければ E0 = 2800N で推定する
+    (:func:`mean_e0` と同じ扱い)。地盤モデルの下端より深い深度は最下層の
+    値を延長して返す(:func:`core.capacity.lateral_limit.p_hu` と同じ扱い)。
+    """
+    layer = profile.layer_at(min(depth, profile.total_depth))
+    return layer.e0 if layer.e0 is not None else E0_FROM_N * layer.n_value
+
+
+def kh_from_e0(e0: float, bh: float, alpha: float) -> float:
+    """変形係数 E0 と換算載荷幅 BH から kH (kN/m3) を求める(道示Ⅳ 9.6)。
+
+        kH = kH0・(BH/0.3)^(-3/4),  kH0 = α・E0 / 0.3
+
+    BH は :func:`lateral_springs` が**常時の条件で定めた値**を渡す。
+    液状化の低減係数 DE と群杭の補正係数 μ は含めない(呼び出し側で乗じる)。
+    """
+    if bh <= 0:
+        raise ValueError("換算載荷幅 BH は正の値である必要があります")
+    return (alpha * e0 / 0.3) * (bh / 0.3) ** (-0.75)
+
+
+def layered_kh(
+    profile: SoilProfile,
+    depths: "list[float] | tuple[float, ...]",
+    bh: float,
+    alpha: float,
+) -> list[float]:
+    """深度ごと・地層ごとの kH (kN/m3) を返す。
+
+    ``depths`` は設計地盤面からの深さ (m)。各深度が属する地層の E0 から
+    :func:`kh_from_e0` で kH を求める。
+
+    .. important::
+       **換算載荷幅 BH は全深度で共通**の値(常時の条件で反復計算して定めた
+       もの)を用いる。BH は「杭が地盤を押し広げる幅」を表す量であって
+       地層の性質ではないため、層ごとに BH を求め直すことはしない。
+
+    E0 が 0(N値 0 かつ E0 未入力)の層では kH = 0 となる。分布バネモデルは
+    節点ごとにバネを持つため、これは「その節点に水平抵抗がない」状態として
+    そのまま扱える(単一の kH では平均されて現れない)。
+    """
+    return [kh_from_e0(e0_at(profile, d), bh, alpha) for d in depths]
+
+
 def mean_e0(
     profile: SoilProfile, embedment: float, depth_range: float
 ) -> float:
@@ -200,7 +247,7 @@ def lateral_springs(
         depth_range = min(1.0 / beta, profile.total_depth - embedment)
         e0 = mean_e0(profile, embedment, depth_range)
         bh = math.sqrt(d / beta)
-        kh_ref = (alpha_normal * e0 / 0.3) * (bh / 0.3) ** (-0.75) * group_factor
+        kh_ref = kh_from_e0(e0, bh, alpha_normal) * group_factor
         beta_new = (kh_ref * d / (4.0 * ei)) ** 0.25
         if abs(beta_new - beta) < tol * max(1.0, beta):
             beta = beta_new
@@ -224,7 +271,7 @@ def lateral_springs(
             "この状態では適用できません。分布バネモデル(BNWF)であれば"
             "節点ごとに扱えるため、レベル2の照査を用いてください"
         )
-    kh = (alpha * e0 / 0.3) * (bh / 0.3) ** (-0.75) * de * group_factor
+    kh = kh_from_e0(e0, bh, alpha) * de * group_factor
 
     # --- 手順3: kH から β と K1〜K4 を求める ------------------------------
     beta = (kh * d / (4.0 * ei)) ** 0.25

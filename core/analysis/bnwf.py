@@ -32,15 +32,18 @@ Chang の式(弾性・半無限長)では表せない**地盤の塑性化**を�
 --------
 節点 i のバネ定数と上限値は、分担長 Δz_i を用いて
 
-    k_i = kH・D・Δz_i    (kN/m)
+    k_i = kH_i・D・Δz_i  (kN/m)
     R_i = pHU_i・D・Δz_i (kN)
 
 とする。載荷方向・反対方向とも同じ上限値を用いる(片側の受働抵抗のみを
 考える細かいモデル化はしていない)。
 
-.. note::
-   水平方向地盤反力係数 kH は杭長にわたって一定としている。これは
-   Chang の式と同じ仮定であり、深さ方向の変化は取り込んでいない。
+水平方向地盤反力係数 kH は**節点ごと**に与えられる。Chang の式は地盤が
+一様であることを前提とするため単一の kH しか持てないが、分布バネモデルには
+その制約がない。:func:`core.capacity.springs.layered_kh` により当該深度の
+地層の変形係数 E0 から求めた kH を節点ごとに与えるのが本ソフトの既定である
+(換算載荷幅 BH は常時の条件で定めた共通値を用いる)。スカラーを渡せば
+従来どおり杭長にわたって一定の kH として扱う。
 """
 from __future__ import annotations
 
@@ -90,6 +93,25 @@ def _beam_stiffness(ei: float, element_length: float, n_elements: int) -> np.nda
     return k
 
 
+def _node_kh(kh: float | np.ndarray, n_elements: int) -> np.ndarray:
+    """節点ごとの kH 配列に整える。スカラーは全節点に展開する。"""
+    array = np.atleast_1d(np.asarray(kh, dtype=float))
+    if array.size == 1:
+        if array[0] <= 0.0:
+            raise ValueError("kH は正の値である必要があります")
+        return np.full(n_elements + 1, float(array[0]))
+    if array.shape != (n_elements + 1,):
+        raise ValueError(
+            f"kH の要素数が分割数と一致しません "
+            f"({array.shape[0]} ≠ {n_elements + 1})"
+        )
+    if np.any(array < 0.0) or not np.all(np.isfinite(array)):
+        raise ValueError("節点ごとの kH は 0 以上の有限値である必要があります")
+    if not np.any(array > 0.0):
+        raise ValueError("節点ごとの kH がすべて 0 です(水平抵抗がありません)")
+    return array.copy()
+
+
 def tributary_lengths(length: float, n_elements: int) -> np.ndarray:
     """各節点が受け持つ長さ(台形則)。両端は要素長の 1/2。"""
     le = length / n_elements
@@ -111,7 +133,10 @@ class PileLateralModel:
     length:
         杭長 (m)。
     kh:
-        水平方向地盤反力係数 (kN/m³)。
+        水平方向地盤反力係数 (kN/m³)。スカラーなら杭長にわたって一定、
+        長さ 要素数 + 1 の配列なら**節点ごと**の値として扱う。配列の要素は
+        0 以上であればよい(0 = その節点に水平抵抗がない)が、すべてが 0 では
+        釣合いが解けないため少なくとも 1 つは正である必要がある。
     limits:
         節点ごとの地盤反力度の上限値 pHU (kN/m²)。``None`` なら弾性
         (上限なし)として扱う。要素数 + 1 個必要。
@@ -135,15 +160,16 @@ class PileLateralModel:
         ei: float,
         diameter: float,
         length: float,
-        kh: float,
+        kh: float | np.ndarray,
         limits: np.ndarray | None = None,
         reduction: np.ndarray | None = None,
         n_elements: int = 50,
     ) -> None:
         if n_elements < 2:
             raise ValueError("分割数は 2 以上である必要があります")
-        if ei <= 0 or diameter <= 0 or length <= 0 or kh <= 0:
-            raise ValueError("EI・杭径・杭長・kH は正の値である必要があります")
+        if ei <= 0 or diameter <= 0 or length <= 0:
+            raise ValueError("EI・杭径・杭長は正の値である必要があります")
+        self.kh = _node_kh(kh, n_elements)
 
         self.ei = ei
         self.diameter = diameter
@@ -165,7 +191,7 @@ class PileLateralModel:
                 raise ValueError("低減係数 DE は 0〜1 の範囲である必要があります")
         # 低減は**節点ごと**に行う。杭頭バネ K1〜K4 を用いる弾性解析では
         # 深度平均に頼らざるを得ないが、分布バネモデルでは層ごとに扱える。
-        self.spring_k = kh * diameter * tributary * self.reduction  # kN/m
+        self.spring_k = self.kh * diameter * tributary * self.reduction  # kN/m
         if limits is None:
             self.spring_limit = np.full(n_elements + 1, np.inf)
         else:
