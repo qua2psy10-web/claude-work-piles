@@ -732,3 +732,137 @@ def test_sc_pile_uses_the_h24_concrete_young_modulus():
         MaterialSpec(), LoadCase.PERMANENT, 0.0, 1200.0, 80.0,
     )
     assert any("40,000 N/mm²" in n for n in override.notes)
+
+
+# --- Forum8 のサンプル出力との突合(第33回) ---------------------------------
+#
+# 出典: フォーラムエイト UC-1「基礎の設計」設計計算書サンプル kiso-Kui_1
+# (場所打ち杭 φ1200・L=25m・12本、σck=24、SD345、n=15)の 1章。
+# **他社製品の出力(二次資料)**であり道示の原典ではないが、独立した実装の
+# 許容応力度表なので、本ソフトの値と突き合わせる価値がある。
+
+
+def test_allowable_stress_table_matches_the_forum8_sample():
+    """サンプルの許容応力度表(σck=24、SD345)と一致すること。
+
+    | 割増 | σca | τa1 | τa2 | σsa(引張) |
+    |---|---|---|---|---|
+    | 1.00 | 8.00 | 0.230 | 1.700 | 160.00 |
+    | 1.50 | 12.00 | 0.350 | 2.550 | 300.00 |
+
+    とくに σsa は、常時 160(水中又は地下水位以下)→ 地震時 300 であり、
+    **160 × 1.5 = 240 ではない**。地震時に基本値が 200(軸方向鉄筋)へ
+    切り替わってから割増を乗じる扱いが独立に裏付けられた。
+    """
+    from core.standards import (
+        STRESS_INCREASE,
+        UNDERWATER_CONCRETE_ALLOWABLE,
+        YOUNG_MODULUS_RATIO_RC,
+    )
+    from core.section.checks import rebar_tension_allowable
+
+    allow = UNDERWATER_CONCRETE_ALLOWABLE[24]
+    normal = STRESS_INCREASE["常時"]
+    seismic = STRESS_INCREASE["レベル1地震時"]
+
+    assert YOUNG_MODULUS_RATIO_RC == 15.0
+    assert allow.bending_compression * normal == pytest.approx(8.00)
+    assert allow.bending_compression * seismic == pytest.approx(12.00)
+    assert allow.tau_a1 * normal == pytest.approx(0.230)
+    assert allow.tau_a2 * normal == pytest.approx(1.700)
+    assert allow.tau_a2 * seismic == pytest.approx(2.550)
+    # τa1 の割増後は 0.23×1.5 = 0.345。サンプルの表示は 0.350(丸め)で、
+    # 本ソフトのほうが小さい = 安全側なので、この差は追随しない
+    assert allow.tau_a1 * seismic == pytest.approx(0.345)
+    assert allow.tau_a1 * seismic < 0.350
+
+    assert rebar_tension_allowable(
+        "SD345", LoadCase.PERMANENT, underwater=True, increase=normal
+    ) == pytest.approx(160.00)
+    assert rebar_tension_allowable(
+        "SD345", LoadCase.LEVEL1_EQ, underwater=True, increase=seismic
+    ) == pytest.approx(300.00)
+
+
+def test_allowable_horizontal_displacement_matches_the_forum8_sample():
+    """杭径 1200mm では許容水平変位が常時・地震時とも 15mm であること。"""
+    from core.standards import (
+        ALLOWABLE_DISPLACEMENT_DIA_THRESHOLD,
+        ALLOWABLE_DISPLACEMENT_MM,
+        ALLOWABLE_DISPLACEMENT_RATIO,
+    )
+
+    diameter = 1.2
+    assert diameter < ALLOWABLE_DISPLACEMENT_DIA_THRESHOLD
+    assert ALLOWABLE_DISPLACEMENT_MM == pytest.approx(15.0)
+    # 1.5m 以上なら杭径の 1%(φ1200 では 12mm となり 15mm より小さい)
+    assert diameter * ALLOWABLE_DISPLACEMENT_RATIO * 1000 == pytest.approx(12.0)
+
+
+def test_rebar_compression_is_checked_against_the_forum8_value():
+    """鉄筋の許容曲げ圧縮応力度 σsa' = 200(割増1.50 で 300)を照査すること。
+
+    サンプルの表に σsa' があるのに本ソフトが持っていなかったため、第33回に
+    追加した。**値は他社製品の出力から読み取ったもので原典未照合**であり、
+    その旨を注記に出す。
+    """
+    from core.section.checks import REBAR_COMPRESSION_NOTE
+    from core.standards import SIGMA_SA_REBAR_COMPRESSION
+
+    assert SIGMA_SA_REBAR_COMPRESSION == 200.0
+    normal = check_section(CIP, MATERIAL, LoadCase.PERMANENT, 0.0, 1500.0, 800.0)
+    seismic = check_section(CIP, MATERIAL, LoadCase.LEVEL1_EQ, 0.0, 1500.0, 800.0)
+    by_name = {c.name: c for c in normal.checks}
+    assert by_name["鉄筋圧縮応力度"].allowable == pytest.approx(200.0)
+    assert by_name["鉄筋圧縮応力度"].stress == pytest.approx(
+        normal.rc_detail.sigma_s_compression
+    )
+    assert {c.name: c.allowable for c in seismic.checks}["鉄筋圧縮応力度"] == (
+        pytest.approx(300.0)
+    )
+    assert REBAR_COMPRESSION_NOTE in normal.notes
+    assert "原典は未照合" in REBAR_COMPRESSION_NOTE
+
+    # 「鉄筋」で最初に引っかかるのは引張側のままであること(既存テストの前提)
+    assert next(c for c in normal.checks if "鉄筋" in c.name).name == "鉄筋引張応力度"
+
+
+def test_rebar_compression_does_not_govern_for_cast_in_place_piles():
+    """場所打ち杭ではコンクリート圧縮が必ず先に支配すること。
+
+    平面保持より鉄筋位置の応力度は σs = n・σc(鉄筋位置)で、鉄筋はかぶりの
+    内側にあるから σs < n・σc(圧縮縁)。したがって
+
+        σs < n・σca = 15 × 8.0 = 120 < 200   (σck = 24)
+
+    となる。割増係数は σca・σsa' の双方に同じく効くので荷重の組合せによらない。
+    **RC杭では n・σca = 15 × 13.5 = 202.5 で 200 に接する**ので、この包含は
+    成り立たない(だからこそ照査項目として持つ必要がある)。
+    """
+    from core.standards import UNDERWATER_CONCRETE_ALLOWABLE, YOUNG_MODULUS_RATIO_RC
+    from core.standards import PRECAST_CONCRETE_ALLOWABLE, SIGMA_SA_REBAR_COMPRESSION
+
+    n = YOUNG_MODULUS_RATIO_RC
+    assert n * UNDERWATER_CONCRETE_ALLOWABLE[24].bending_compression == 120.0
+    assert 120.0 < SIGMA_SA_REBAR_COMPRESSION
+    # RC杭は接する
+    assert n * PRECAST_CONCRETE_ALLOWABLE["RC杭"].bending_compression == 202.5
+    assert 202.5 > SIGMA_SA_REBAR_COMPRESSION
+
+    pile = PileSpec(
+        pile_type=PileType.CAST_IN_PLACE,
+        method=ConstructionMethod.CAST_IN_PLACE,
+        diameter=1.2,
+        length=25.0,
+    )
+    material = MaterialSpec(
+        fck=24, rebar=RebarLayout(count=24, diameter_mm=25.0, cover_mm=125.0)
+    )
+    for axial, moment in ((8600.0, 200.0), (5000.0, 1500.0), (2000.0, 2500.0)):
+        result = check_section(
+            pile, material, LoadCase.PERMANENT, 0.0, axial, moment
+        )
+        detail = result.rc_detail
+        assert detail.sigma_s_compression < n * detail.sigma_c
+        by_name = {c.name: c for c in result.checks}
+        assert by_name["鉄筋圧縮応力度"].ratio < by_name["コンクリート圧縮応力度"].ratio

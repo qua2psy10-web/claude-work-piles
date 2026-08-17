@@ -33,6 +33,7 @@ from core.standards import (
     REBAR_GRADES,
     REMOVED_REBAR_GRADES,
     SIGMA_A_STEEL,
+    SIGMA_SA_REBAR_COMPRESSION,
     SIGMA_SA_REBAR_SEISMIC,
     SIGMA_SA_REBAR_STATIC,
     STRESS_INCREASE,
@@ -67,6 +68,17 @@ SC_STEEL_ALLOWABLE_NOTE = (
     "なる。メーカーの製品資料等で確認し、異なる場合は "
     "MaterialSpec.sc_steel_allowable に直接指定すること"
     "(docs/VERIFICATION.md 参照)。"
+)
+
+
+# 鉄筋の許容圧縮応力度の出所についての注記。
+REBAR_COMPRESSION_NOTE = (
+    f"鉄筋の許容曲げ圧縮応力度は {SIGMA_SA_REBAR_COMPRESSION:g} N/mm²"
+    "(常時の基本値、荷重の組合せによる割増を乗じる)としている。"
+    "**この値は他社製品の設計計算書サンプルから読み取ったもので、道示の原典は"
+    "未照合**である。材質による差も不明なため全材質に同じ値を用いている"
+    "(材質が上がると許容値は大きくなるので安全側)。"
+    "docs/VERIFICATION.md 参照。"
 )
 
 
@@ -339,9 +351,15 @@ def _check_cast_in_place(
     checks = [
         StressCheck("コンクリート圧縮応力度", detail.sigma_c, sigma_ca),
         StressCheck("鉄筋引張応力度", detail.sigma_s_tension, sigma_sa),
+        StressCheck(
+            "鉄筋圧縮応力度",
+            detail.sigma_s_compression,
+            SIGMA_SA_REBAR_COMPRESSION * increase,
+        ),
     ]
     return PileStressResult(
-        depth=depth, axial=axial, moment=moment, checks=checks, rc_detail=detail
+        depth=depth, axial=axial, moment=moment, checks=checks, rc_detail=detail,
+        notes=[REBAR_COMPRESSION_NOTE],
     )
 
 
@@ -413,8 +431,14 @@ def _check_rc(
             "コンクリート圧縮応力度", detail.sigma_c, allow.bending_compression * increase
         ),
         StressCheck("鉄筋引張応力度", detail.sigma_s_tension, sigma_sa),
+        StressCheck(
+            "鉄筋圧縮応力度",
+            detail.sigma_s_compression,
+            SIGMA_SA_REBAR_COMPRESSION * increase,
+        ),
     ]
     notes = [
+        REBAR_COMPRESSION_NOTE,
         f"RC杭はひび割れ断面(コンクリートの引張を無視)として照査している。"
         f"σck = {fck} N/mm²(表-4.2.7 の RC杭の値)、"
         f"Ec = {ec / 1000.0:,.0f} N/mm²、n = {YOUNG_MODULUS_RATIO_RC:g}。",

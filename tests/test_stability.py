@@ -145,7 +145,9 @@ def test_rc_pile_stress_check_runs_end_to_end():
     case = report.cases[0]
     assert case.stress_head is not None
     names = {c.name for c in case.stress_head.checks}
-    assert names == {"軸圧縮応力度", "コンクリート圧縮応力度", "鉄筋引張応力度"}
+    assert names == {
+        "軸圧縮応力度", "コンクリート圧縮応力度", "鉄筋引張応力度", "鉄筋圧縮応力度",
+    }
     # 許容応力度は RC杭の表の値(σck の入力 30 には依存しない)
     allowables = {c.name: c.allowable for c in case.stress_head.checks}
     assert allowables["コンクリート圧縮応力度"] == pytest.approx(13.5)
