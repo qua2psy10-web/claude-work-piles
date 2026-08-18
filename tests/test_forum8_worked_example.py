@@ -613,3 +613,95 @@ def test_uplift_limit_formula_matches_7_6_5():
     body = pile_body_axial_limits(PILE, REBAR, fck=24, rebar_grade="SD345")
     assert body.pull == pytest.approx(4195.0, abs=1.0)
     assert min(ground, body.pull) == pytest.approx(4195.0, abs=1.0)
+
+
+# --- Kui_2(PHC杭・中掘り杭工法)の 5.2〜5.3(第37回)-----------------------
+#
+# 別サンプル Kui_2 は PHC杭 φ800・中掘り杭(セメントミルク噴出攪拌)・突出杭。
+# 5.3「許容支持力・引抜力の計算」が載っており、**許容値の式と安全率**を
+# 直接突き合わせられる(Kui_1 には無かった章)。
+
+
+def test_allowable_capacity_formulas_and_safety_factors_match():
+    """許容支持力・引抜力の式と安全率が計算例と一致すること。
+
+    Kui_2 の 5.3(杭タイプ1)は式と安全率を明記している。
+
+        Ra =(Ru − Ws)/ n + Ws − W   n = 3.0(常時)/ 2.0(地震時)
+        Pa = Pu / n + W              n = 6.0(常時)/ 3.0(地震時)
+
+    Ru = 5520、Ws = 93.1(杭で置き換えられる部分の土の有効重量)、
+    W = 97.3(杭の有効重量)、Pu = 1750 に対する結果は
+    1805 / 2709(支持力)、389 / 681(引抜力)。
+    """
+    from core.capacity.bearing import BearingCapacity
+    from core.models import LoadCase
+
+    bearing = BearingCapacity(
+        qd=7500.0, tip_area=0.503, tip_resistance=3772.5, ru=5520.0,
+        w_soil=93.1, w_pile=97.3, skin_resistance=1750.0,
+    )
+    assert bearing.allowable_push(LoadCase.PERMANENT) == pytest.approx(1805, abs=1)
+    assert bearing.allowable_push(LoadCase.LEVEL1_EQ) == pytest.approx(2709, abs=1)
+    assert bearing.allowable_pull(LoadCase.PERMANENT) == pytest.approx(389, abs=1)
+    assert bearing.allowable_pull(LoadCase.LEVEL1_EQ) == pytest.approx(681, abs=1)
+
+
+def test_safety_factors_match_the_worked_example():
+    """支持杭の安全率 3.0 / 2.0(押込み)、6.0 / 3.0(引抜き)。"""
+    from core.standards import SAFETY_FACTORS_PULL, SAFETY_FACTORS_PUSH
+
+    assert SAFETY_FACTORS_PUSH["常時"]["支持杭"] == pytest.approx(3.0)
+    assert SAFETY_FACTORS_PUSH["レベル1地震時"]["支持杭"] == pytest.approx(2.0)
+    assert SAFETY_FACTORS_PULL["常時"] == pytest.approx(6.0)
+    assert SAFETY_FACTORS_PULL["レベル1地震時"] == pytest.approx(3.0)
+
+
+def test_inner_digging_axial_spring_coefficient_matches():
+    """中掘り杭工法の a = 0.010・(L/D)+ 0.36 と Kv が一致すること。
+
+    Kui_2 の 5.2(杭タイプ1): L = 23.300 m、D = 0.8000 m、
+    Ap = 0.24850 m²、Ep = 4.00×10⁷ kN/m² → a = 0.6513、Kv = 277829 kN/m。
+    """
+    from core.capacity.springs import PileSection, axial_spring
+    from core.standards import KV_A_COEF
+
+    slope, intercept = KV_A_COEF["中掘り"]
+    assert (slope, intercept) == (0.010, 0.36)
+    assert slope * (23.300 / 0.8) + intercept == pytest.approx(0.6513, abs=1e-4)
+
+    phc = PileSpec(
+        pile_type=PileType.PHC,
+        method=ConstructionMethod.INNER_DIGGING,
+        diameter=0.8,
+        length=23.300,
+        concrete_thickness=115.0,
+    )
+    section = PileSection(area=0.24850, inertia=1.0, young=4.0e7)
+    assert axial_spring(phc, section) == pytest.approx(277829, rel=1e-4)
+
+
+def test_skin_friction_intensity_is_a_user_input_in_the_worked_examples():
+    """計算例の f は**利用者入力**であり、f の表の照合には使えないこと。
+
+    決定的な証拠は Kui_1 の 1.5 地層データで、N = 2 の粘性土に **f = 0.0**
+    が入っていること。10N = 20 でも c = 30 でもなく、どの推定式からも
+    出てこない値である。Kui_2 でも N = 2 の粘性土が f = 0.0 になっている。
+
+    したがって計算例の f と本ソフトの推定値が食い違っても、それは
+    **本ソフトの誤りを意味しない**。実際 Kui_2(中掘り杭)では
+    砂質土 N=20 → 計算例 20.0 に対し本ソフトは 3N = 60.0 である。
+    """
+    from core.capacity.bearing import skin_friction_intensity
+    from core.models import SoilLayer, SoilType
+    from core.standards import F_SPECS
+
+    # 中掘り杭の砂質土は 3N(第4回以降の値)
+    assert F_SPECS["中掘り"]["砂質土"] == (3.0, "N")
+    layer = SoilLayer(
+        name="s", soil_type=SoilType.SAND, thickness=1.0, n_value=20.0,
+        gamma_t=18.0, gamma_sat=18.0,
+    )
+    assert skin_friction_intensity(
+        ConstructionMethod.INNER_DIGGING, layer
+    ) == pytest.approx(60.0)
