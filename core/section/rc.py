@@ -107,6 +107,27 @@ class RebarLayout:
     def total_area(self) -> float:
         return self.count * self.bar_area
 
+    @property
+    def bar_perimeter_mm(self) -> float:
+        """鉄筋1本の**公称周長** (mm)。杭頭補強鉄筋の定着長(道示Ⅳ 12.9.3、
+        ``Lo = σsa・Ast/(τoa・u)``)の u に用いる。
+
+        公称断面積(``bar_area``)と等しい面積の円の周長として算定し、
+        整数 mm に丸める:
+
+            u = round(2・√(π・Anom))
+
+        出典: フォーラムエイト UC-1 計算書サンプル Kui_4・Kui_5 の 6.4
+        「杭頭補強鉄筋の定着長」(第45回)。D22 で 70mm(本式 69.75→70)、
+        D35 で 110mm(本式 109.64→110)の2点で、丸め込み後に定着長 Lo・L
+        が計算例と一致することを確認した(整数に丸めない場合は Lo が
+        0.3〜0.4% 過大になる)。表にない呼び径は幾何学的な周長 π・d を使う。
+        """
+        area_mm2 = REBAR_NOMINAL_AREA.get(self.diameter_mm)
+        if area_mm2 is None:
+            return math.pi * self.diameter_mm
+        return round(2.0 * math.sqrt(math.pi * area_mm2))
+
     def radius(self, section_diameter: float) -> float:
         """鉄筋円の半径 (m)"""
         r = section_diameter / 2.0 - self.cover_mm / 1000.0

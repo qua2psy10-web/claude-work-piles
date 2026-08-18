@@ -25,16 +25,14 @@
   (:func:`horizontal_edge_punching_shear`。フーチング有効厚さ h' は
   利用者が与える必要があるため :func:`check_pile_head` には自動配線していない)
 * 縁端距離の確認と、水平方向押抜きせん断照査の要否判定 — 実装済み
-* 杭頭補強鉄筋の応力度・定着長、仮想RC断面の照査 — **未実装**
-  (docs/VERIFICATION.md 第43回に、公式の再現と数値一致を確認した記録がある。
-  ``core.section.rc.analyze_circular_rc`` がそのまま転用できる見込みだが、
-  引張軸力を受ける断面の未実装(第31回来の既知の制限)と鉄筋許容応力度の
-  入力方法の設計が残っている)
+* 杭頭補強鉄筋の**定着長** — 実装済み(:func:`anchorage_length`)
+* **仮想RC断面の照査** — 実装済み(:func:`virtual_rc_section_check`。
+  ``core.section.rc.analyze_circular_rc`` をそのまま転用している。
+  H24 で削除済みの鉄筋材質(SD295 等)や、引張軸力を受ける断面
+  (第31回来の既知の制限)には未対応)
 
 .. warning::
    照査式・許容値は原典未照合の項目を含む(docs/VERIFICATION.md 参照)。
-   特に杭頭補強鉄筋と仮想RC断面が未実装であるため、**本モジュールだけで
-   杭頭結合部の安全性を確認したことにはならない**。
 """
 from __future__ import annotations
 
@@ -43,11 +41,17 @@ from dataclasses import dataclass
 
 from core.models.loads import LoadCase
 from core.models.pile import Footing, PileArrangement
-from core.section.checks import StressCheck
+from core.section.checks import StressCheck, rebar_tension_allowable
+from core.section.rc import RcStressResult, RebarLayout, analyze_circular_rc
 from core.standards import (
+    EC_CONCRETE,
     PULL_OUT_RESISTANCE_THICKNESS,
+    REBAR_NOMINAL_AREA,
+    SIGMA_CA_CONCRETE,
     SIGMA_CVA_PILE_HEAD_BEARING,
+    SIGMA_SA_REBAR_COMPRESSION,
     STRESS_INCREASE,
+    YOUNG_MODULUS_RATIO_RC,
     TAU_A_PUNCHING,
 )
 
@@ -284,3 +288,126 @@ def check_pile_head(
         else None
     )
     return PileHeadResult(punching_area=area, checks=checks, edge_distance=edge)
+
+
+@dataclass(frozen=True)
+class AnchorageLength:
+    """杭頭補強鉄筋の定着長(道示Ⅳ 12.9.3)。"""
+
+    lo: float  # 鉄筋の定着長 Lo (mm)
+    required: float  # 必要埋込み長 L = Lo + 10・d (mm)
+
+
+def anchorage_length(
+    sigma_sa: float, tau_oa: float, bar_diameter_mm: float
+) -> AnchorageLength:
+    """杭頭補強鉄筋の定着長を求める。
+
+        Lo = σsa・Ast / (τoa・u)
+        L  ≧ Lo + 10・d
+
+    ``Ast``(鉄筋1本の公称断面積)・``u``(同公称周長)は
+    ``REBAR_NOMINAL_AREA`` から算定する(:attr:`core.section.rc.RebarLayout.
+    bar_perimeter_mm` と同じ式。表にない呼び径は幾何学的な値で代用)。
+
+    出典: フォーラムエイト UC-1 計算書サンプル Kui_4・Kui_5 の 6.4
+    「杭頭補強鉄筋の定着長」(第43・45回)。
+
+    - D22(SD295、σsa=180、τoa=1.6)→ Lo=622.1(計算例 622)、
+      L=842.1(計算例 842)
+    - D35(SD345、σsa=200、τoa=1.6)→ Lo=1087.0(計算例 1087)、
+      L=1437.0(計算例 1437)
+
+    確度C(他社製品の出力からの2点のみ。原典は未照合)。
+    """
+    if sigma_sa <= 0 or tau_oa <= 0 or bar_diameter_mm <= 0:
+        raise ValueError("許容応力度・付着応力度・鉄筋径は正の値である必要があります")
+    nominal_area = REBAR_NOMINAL_AREA.get(bar_diameter_mm)
+    if nominal_area is None:
+        ast = math.pi * bar_diameter_mm**2 / 4.0
+        u = math.pi * bar_diameter_mm
+    else:
+        ast = nominal_area
+        u = round(2.0 * math.sqrt(math.pi * ast))
+    lo = sigma_sa * ast / (tau_oa * u)
+    return AnchorageLength(lo=lo, required=lo + 10.0 * bar_diameter_mm)
+
+
+@dataclass(frozen=True)
+class VirtualRcSectionResult:
+    """杭頭の仮想鉄筋コンクリート断面の照査結果。"""
+
+    detail: RcStressResult
+    checks: list[StressCheck]
+
+    @property
+    def all_ok(self) -> bool:
+        return all(c.ok for c in self.checks)
+
+
+def virtual_rc_section_check(
+    virtual_diameter: float,
+    rebar: RebarLayout,
+    fck: int,
+    rebar_grade: str,
+    case: LoadCase,
+    axial: float,
+    moment: float,
+) -> VirtualRcSectionResult:
+    """杭頭の仮想鉄筋コンクリート断面を照査する(方法B、道示Ⅳ 12.9.3)。
+
+    ``virtual_diameter`` は仮想RC断面の直径 Do(実際の杭径より大きい。
+    利用者が与える設計値)。``rebar`` はその断面に配置する補強鉄筋。
+
+    フーチングコンクリート(水中施工ではない)として ``SIGMA_CA_CONCRETE``
+    を、鉄筋圧縮側は場所打ち杭の照査と同じ ``SIGMA_SA_REBAR_COMPRESSION``
+    (材質によらず一定値)を、鉄筋引張側は :func:`core.section.checks.
+    rebar_tension_allowable` を用いる。**H24 で削除済みの鉄筋材質
+    (SD295 等)は選択できない**(``rebar_tension_allowable`` が拒む)。
+
+    軸力が負(引抜き支配)になる場合、``analyze_circular_rc`` の既知の制限
+    (引張軸力を受ける断面の応力度計算は未実装)により ``NotImplementedError``
+    となる。
+
+    出典: フォーラムエイト UC-1 計算書サンプル Kui_4 の 6.3
+    「仮想鉄筋コンクリート断面照査」(SD345、Do=1.4m、D35×24本@118、
+    かぶり250mm)(第45回)。純軸圧縮(M=0, N=1870.5kN)で
+    σc=1.005(計算例 0.99)、地震時(N=3163.5, M=897.5)で
+    σc=4.78(計算例 4.72)・σs=54.6(同 53.99)、引張側が生じるケース
+    (N=144.1, M=897.5)で σs(引張)=113.31(計算例 113.27、0.04%差)と
+    確認した。**残差 1〜1.5% は既知の設計判断**(第31回付近に記録済み:
+    換算断面積を Ac+n・As ではなく Ac+(n−1)・As(鉄筋が占めるコンクリートを
+    控除する、より安全側の式)で計算しているため)であり、常に本ソフトの
+    ほうが厳しい(応力度を大きく見る)側になる。確度C。
+    """
+    if fck not in SIGMA_CA_CONCRETE:
+        raise ValueError(
+            f"σck={fck} は許容曲げ圧縮応力度 σca の表(σck = "
+            f"{sorted(SIGMA_CA_CONCRETE)})の範囲外です。"
+            "適用する設計条件・発注者基準を別途確認してください"
+        )
+    if fck not in EC_CONCRETE:
+        raise ValueError(f"σck={fck} は未対応です")
+    increase = STRESS_INCREASE[case.value]
+    detail = analyze_circular_rc(
+        diameter=virtual_diameter,
+        rebar=rebar,
+        ec=EC_CONCRETE[fck],
+        n_ratio=YOUNG_MODULUS_RATIO_RC,
+        axial=axial,
+        moment=moment,
+    )
+    sigma_ca = SIGMA_CA_CONCRETE[fck] * increase
+    sigma_sa = rebar_tension_allowable(
+        rebar_grade, case, underwater=False, increase=increase
+    )
+    checks = [
+        StressCheck("仮想RC断面コンクリート圧縮応力度", detail.sigma_c, sigma_ca),
+        StressCheck("仮想RC断面鉄筋引張応力度", detail.sigma_s_tension, sigma_sa),
+        StressCheck(
+            "仮想RC断面鉄筋圧縮応力度",
+            detail.sigma_s_compression,
+            SIGMA_SA_REBAR_COMPRESSION * increase,
+        ),
+    ]
+    return VirtualRcSectionResult(detail=detail, checks=checks)

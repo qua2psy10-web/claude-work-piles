@@ -994,3 +994,99 @@ def test_steel_pipe_pile_body_axial_limits_match_kui5_8_6_4_with_skk400():
     assert limits.push == pytest.approx(5174.0, abs=1.0)
     assert limits.pull == pytest.approx(5174.0, abs=1.0)
     assert limits.push == limits.pull
+
+
+# --- Kui_4(場所打ち杭φ1200・SD345)の仮想RC断面照査・定着長(第45回)-------
+#
+# 6.3「仮想鉄筋コンクリート断面照査」・6.4「杭頭補強鉄筋の定着長」は
+# 第43回(Kui_5)で式は判明していたが、材質がH24で削除済みのSD295だった
+# ため実装を見送っていた。Kui_4はSD345(本ソフトが対応する材質)の
+# 数値例を持つため、これを機に実装した。
+
+
+def test_anchorage_length_matches_kui4_d35():
+    """D35・SD345(6.4)の定着長が一致すること。"""
+    from core.section.pile_head import anchorage_length
+
+    result = anchorage_length(sigma_sa=200.0, tau_oa=1.6, bar_diameter_mm=35.0)
+    assert result.lo == pytest.approx(1087, abs=1.0)
+    assert result.required == pytest.approx(1437, abs=1.0)
+
+
+def test_anchorage_length_matches_kui5_d22():
+    """D22・SD295(6.4)の定着長も一致すること(第43回で式のみ確認していた
+    ものを、第45回に実装できたことの回帰確認)。"""
+    from core.section.pile_head import anchorage_length
+
+    result = anchorage_length(sigma_sa=180.0, tau_oa=1.6, bar_diameter_mm=22.0)
+    assert result.lo == pytest.approx(622, abs=1.0)
+    assert result.required == pytest.approx(842, abs=1.0)
+
+
+def test_bar_perimeter_mm_matches_the_two_worked_examples():
+    """RebarLayout.bar_perimeter_mm が D22→70mm・D35→110mm と一致すること。"""
+    from core.section.rc import RebarLayout
+
+    assert RebarLayout(1, 22.0, 0.0).bar_perimeter_mm == pytest.approx(70, abs=0.5)
+    assert RebarLayout(1, 35.0, 0.0).bar_perimeter_mm == pytest.approx(110, abs=0.5)
+
+
+def test_virtual_rc_section_check_matches_kui4_axial_only():
+    """純軸圧縮(M=0)のケースで仮想RC断面の応力度が一致すること(Kui_4 6.3)。
+
+    Do=1.4m・D35×24本@118・かぶり250mm・SD345・N=1870.5kN・M=0。
+    本ソフトは換算断面積に Ac+(n-1)・As(鉄筋が占めるコンクリートを控除する、
+    より安全側の式)を使っており、計算例(Ac+n・As)とは 1〜1.5% 程度
+    本ソフトのほうが厳しい側にずれる(第31回付近に既知の設計判断として
+    記録済み)。
+    """
+    from core.models import LoadCase
+    from core.section.pile_head import virtual_rc_section_check
+    from core.section.rc import RebarLayout
+
+    rebar = RebarLayout(count=24, diameter_mm=35, cover_mm=250)
+    result = virtual_rc_section_check(
+        virtual_diameter=1.4, rebar=rebar, fck=24, rebar_grade="SD345",
+        case=LoadCase.PERMANENT, axial=1870.5, moment=0.0,
+    )
+    concrete = next(c for c in result.checks if "コンクリート" in c.name)
+    compression = next(c for c in result.checks if "圧縮" in c.name and "鉄筋" in c.name)
+    assert concrete.stress == pytest.approx(0.99, rel=0.02)
+    assert concrete.allowable == pytest.approx(8.0)
+    assert compression.stress == pytest.approx(14.89, rel=0.02)
+    assert compression.allowable == pytest.approx(200.0)
+    assert result.all_ok
+
+
+def test_virtual_rc_section_check_matches_kui4_tension_side():
+    """引張側が生じるケースでも一致すること(Kui_4 6.3、地震時 Nmin)。
+
+    N=144.1kN(押込みだが小さい)・M=897.5kN・m で、鉄筋引張応力度が
+    計算例と 0.04% 差で一致する。
+    """
+    from core.models import LoadCase
+    from core.section.pile_head import virtual_rc_section_check
+    from core.section.rc import RebarLayout
+
+    rebar = RebarLayout(count=24, diameter_mm=35, cover_mm=250)
+    result = virtual_rc_section_check(
+        virtual_diameter=1.4, rebar=rebar, fck=24, rebar_grade="SD345",
+        case=LoadCase.LEVEL1_EQ, axial=144.1, moment=897.5,
+    )
+    tension = next(c for c in result.checks if "引張" in c.name)
+    assert tension.stress == pytest.approx(113.27, rel=0.005)
+    assert tension.allowable == pytest.approx(300.0)
+
+
+def test_virtual_rc_section_check_rejects_removed_rebar_grade():
+    """SD295 は H24 で削除済みのため拒むこと(6.3 は本来 Kui_5 が SD295 だった)。"""
+    from core.models import LoadCase
+    from core.section.pile_head import virtual_rc_section_check
+    from core.section.rc import RebarLayout
+
+    rebar = RebarLayout(count=16, diameter_mm=22, cover_mm=250)
+    with pytest.raises(ValueError, match="削除"):
+        virtual_rc_section_check(
+            virtual_diameter=1.2, rebar=rebar, fck=24, rebar_grade="SD295",
+            case=LoadCase.PERMANENT, axial=310.0, moment=0.0,
+        )
