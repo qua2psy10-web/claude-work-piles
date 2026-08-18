@@ -1133,3 +1133,32 @@ def test_skin_friction_f_remains_inconsistent_across_worked_examples():
     # 本ソフトの実装(coef=3.0)はそのどちらとも一致しない。
     # 一致しないことそのものが「f は利用者入力」という結論を補強する。
     assert F_SPECS["プレボーリング"]["砂質土"] == (3.0, "N")
+
+
+def test_phc_pile_body_axial_limits_with_a_different_pc_steel_grade_kui6():
+    """PC鋼材の降伏点は製品によって異なり、既定値の上書きが必要なこと
+    (Kui_6 6.6.5、第48回)。
+
+    Kui_2(φ800・t=110)は σy=1275(既定値と一致)だったが、Kui_6
+    (φ600・t=90・B種)は **σy=1250**(σpu=1400 との組)で、
+    `PRESTRESSING_STEEL_YIELD_POINT` の既定値とは異なる。この違いは
+    PC鋼材の製品差によるもので、既定値が間違っているわけではない —
+    ``prestressing_steel_yield`` で上書きする設計が実際に必要になる
+    ケースが2例目で確認できた。
+
+        Ppu = σy・As = 1250.00×10³ × 16.540×10⁻⁴ = 2068 (kN)
+    """
+    from core.analysis.level2 import pile_body_axial_limits
+
+    phc = PileSpec(
+        pile_type=PileType.PHC,
+        method=ConstructionMethod.PREBORING,
+        diameter=0.6,
+        length=14.9,
+        concrete_thickness=90.0,
+    )
+    limits = pile_body_axial_limits(
+        phc, fck=80, prestressing_steel_area=16.540e-4,
+        prestressing_steel_yield=1250.0,
+    )
+    assert limits.pull == pytest.approx(2068.0, abs=1.0)
