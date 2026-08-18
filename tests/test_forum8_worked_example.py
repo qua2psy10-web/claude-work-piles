@@ -574,18 +574,19 @@ def test_pile_body_limit_governs_the_uplift_and_is_the_safe_side():
 
 
 def test_pile_body_limits_are_only_for_verified_pile_types():
-    """場所打ち杭・PHC杭以外は式が確認できていないので拒むこと。"""
+    """場所打ち杭・PHC杭・鋼管杭・鋼管ソイルセメント杭以外は式が確認できて
+    いないので拒むこと。"""
     from core.analysis.level2 import pile_body_axial_limits
 
-    steel = PileSpec(
-        pile_type=PileType.STEEL_PIPE,
+    sc_pile = PileSpec(
+        pile_type=PileType.SC,
         method=ConstructionMethod.DRIVEN,
         diameter=1.2,
         length=25.0,
         wall_thickness=12.0,
     )
-    with pytest.raises(ValueError, match="場所打ち杭・PHC杭のみ"):
-        pile_body_axial_limits(steel, REBAR, fck=24)
+    with pytest.raises(ValueError, match="場所打ち杭・PHC杭・鋼管杭・鋼管ソイルセメント杭のみ"):
+        pile_body_axial_limits(sc_pile, REBAR, fck=24)
 
 
 def test_uplift_limit_formula_matches_7_6_5():
@@ -914,3 +915,52 @@ def test_steel_pipe_soil_cement_kv_requires_soil_cement_diameter():
     section = pile_section(pile)
     with pytest.raises(ValueError, match="固化体径"):
         axial_spring(pile, section)
+
+
+# --- Kui_3 続き(7.7.4/7.7.5 予備計算)(第42回)-------------------------------
+#
+# 原本 p191〜193。鋼管ソイルセメント杭の杭体から決まる押込み・引抜き支持力の
+# 上限値は、場所打ち杭・PHC杭と異なり**押込み側にも固化体・コンクリートの
+# 項が無く**、押込み・引抜きが同一の式 Rpu = Ptu = σy・As になる。
+
+
+def test_steel_pipe_pile_body_axial_limits_match_kui3_7_7_4():
+    """鋼管ソイルセメント杭は Rpu = Ptu = σy・As(固化体は見込まない)こと。
+
+        σy = 315.00 ×10³ kN/m²(SKK490 の降伏点)
+        As = 0.044108 m²(鋼管の純断面積。腐食代控除後)
+        Rpu = Ptu = 13894 kN
+    """
+    from core.analysis.level2 import pile_body_axial_limits
+    from core.capacity.section import pile_section
+    from core.standards import SIGMA_Y_STEEL
+
+    assert SIGMA_Y_STEEL["SKK490"] == 315.0
+    pile = PileSpec(
+        pile_type=PileType.STEEL_PIPE_SOIL_CEMENT,
+        method=ConstructionMethod.STEEL_PIPE_SOIL_CEMENT,
+        diameter=0.8, length=30.9, wall_thickness=19.0,
+        soil_cement_diameter=1.0,
+    )
+    section = pile_section(pile)
+    assert section.area == pytest.approx(0.044108, abs=1e-6)
+
+    limits = pile_body_axial_limits(pile, section=section, steel_grade="SKK490")
+    assert limits.concrete_area == 0.0
+    assert limits.push == pytest.approx(13894.0, abs=1.0)
+    assert limits.pull == pytest.approx(13894.0, abs=1.0)
+    # 場所打ち杭・PHC杭と異なり、押込み・引抜きが同一の式になる
+    assert limits.push == limits.pull
+
+
+def test_steel_pipe_pile_body_limits_need_section():
+    """鋼管杭・鋼管ソイルセメント杭は断面諸元 section の入力を要求すること。"""
+    from core.analysis.level2 import pile_body_axial_limits
+
+    pile = PileSpec(
+        pile_type=PileType.STEEL_PIPE,
+        method=ConstructionMethod.DRIVEN,
+        diameter=1.2, length=25.0, wall_thickness=12.0,
+    )
+    with pytest.raises(ValueError, match="断面諸元"):
+        pile_body_axial_limits(pile)
