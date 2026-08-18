@@ -964,3 +964,33 @@ def test_steel_pipe_pile_body_limits_need_section():
     )
     with pytest.raises(ValueError, match="断面諸元"):
         pile_body_axial_limits(pile)
+
+
+def test_steel_pipe_pile_body_axial_limits_match_kui5_8_6_4_with_skk400():
+    """SKK400・打込み杭でも Rpu = Ptu = σy・As が一致すること(Kui_5 8.6.4)。
+
+    第42回はSC鋼管ソイルセメント杭(SKK490)のみで確認していたが、Kui_5
+    (既設杭=鋼管杭φ600・打込み杭(打撃)・SKK400・外側錆代2.0mm)は
+    3点目の独立した確認になる。
+
+        σy = 235.00 ×10³ kN/m²(SKK400の降伏点)
+        As = 0.022016 m²(鋼管の純断面積。腐食代2.0mmを控除後)
+        Rpu = Ptu = 5174 kN
+    """
+    from core.analysis.level2 import pile_body_axial_limits
+    from core.capacity.section import pile_section
+    from core.standards import SIGMA_Y_STEEL
+
+    assert SIGMA_Y_STEEL["SKK400"] == 235.0
+    pile = PileSpec(
+        pile_type=PileType.STEEL_PIPE,
+        method=ConstructionMethod.DRIVEN,
+        diameter=0.6, length=15.0, wall_thickness=14.0,
+    )
+    section = pile_section(pile, corrosion_mm=2.0)
+    assert section.area == pytest.approx(0.022016, abs=1e-6)
+
+    limits = pile_body_axial_limits(pile, section=section, steel_grade="SKK400")
+    assert limits.push == pytest.approx(5174.0, abs=1.0)
+    assert limits.pull == pytest.approx(5174.0, abs=1.0)
+    assert limits.push == limits.pull
