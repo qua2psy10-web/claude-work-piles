@@ -18,8 +18,18 @@
 本モジュールの実装範囲:
 
 * 押込み力に対する **押抜きせん断** と **支圧** — 実装済み
+* 引抜き力に対する **押抜きせん断**(方法A、専用の抵抗厚さ ht を使用) — 実装済み
+* 水平力・モーメントに対する **水平支圧応力度**(方法B は PH のみ、方法A は
+  M も加味)— 実装済み
+* フーチング端部の杭に対する **水平方向押抜きせん断** — 関数として実装済み
+  (:func:`horizontal_edge_punching_shear`。フーチング有効厚さ h' は
+  利用者が与える必要があるため :func:`check_pile_head` には自動配線していない)
 * 縁端距離の確認と、水平方向押抜きせん断照査の要否判定 — 実装済み
 * 杭頭補強鉄筋の応力度・定着長、仮想RC断面の照査 — **未実装**
+  (docs/VERIFICATION.md 第43回に、公式の再現と数値一致を確認した記録がある。
+  ``core.section.rc.analyze_circular_rc`` がそのまま転用できる見込みだが、
+  引張軸力を受ける断面の未実装(第31回来の既知の制限)と鉄筋許容応力度の
+  入力方法の設計が残っている)
 
 .. warning::
    照査式・許容値は原典未照合の項目を含む(docs/VERIFICATION.md 参照)。
@@ -35,7 +45,8 @@ from core.models.loads import LoadCase
 from core.models.pile import Footing, PileArrangement
 from core.section.checks import StressCheck
 from core.standards import (
-    SIGMA_CA_CONCRETE,
+    PULL_OUT_RESISTANCE_THICKNESS,
+    SIGMA_CVA_PILE_HEAD_BEARING,
     STRESS_INCREASE,
     TAU_A_PUNCHING,
 )
@@ -119,6 +130,70 @@ def punching_shear_area(
     return math.pi * (pile_diameter + h) * h
 
 
+def horizontal_bearing_stress(
+    shear: float,
+    diameter: float,
+    embedment: float,
+    moment: float = 0.0,
+) -> float:
+    """フーチングコンクリートの水平支圧応力度 σch (N/mm2)(道示Ⅳ 12.9.3)。
+
+        σch = PH/(D・L) + 6・M/(D・L²)
+
+    ``moment`` を省略(0.0)すると PH のみの式になる。
+
+    .. important::
+       **方法B(H24 標準、埋込み長 100mm)はモーメント項を含まない式**が
+       計算例で使われている(モーメント抵抗は仮想RC断面が負担するため)。
+       **方法A(杭径相当を埋め込む剛結)はモーメント項を含む式**が使われて
+       いる。方法Aとして評価したい場合のみ ``moment`` を渡すこと。
+
+    出典: フォーラムエイト UC-1「基礎の設計」計算書サンプル Kui_5 の
+    6.2(3)(第43回)。既設鋼管杭(方法A、L=D=0.6m)PH=100.3kN,
+    M=90.0kN·m, D=0.6m → σch=2.78 N/mm²(本式 2.7786)、増し杭
+    (方法B、L=0.1m)PH=167.1kN, D=1.0m(モーメント省略)→
+    σch=1.67 N/mm²(本式 1.671)と一致確認済み。確度C(他社製品の出力
+    からσck=24の例のみで確認。原典は未照合)。
+    """
+    if diameter <= 0 or embedment <= 0:
+        raise ValueError("杭径・埋込み長は正の値である必要があります")
+    return (
+        abs(shear) / (diameter * embedment)
+        + 6.0 * abs(moment) / (diameter * embedment**2)
+    ) / 1000.0
+
+
+def horizontal_edge_punching_shear(
+    shear: float,
+    diameter: float,
+    embedment: float,
+    effective_thickness: float,
+) -> float:
+    """フーチング端部の杭に対する水平方向の押抜きせん断応力度 τh (N/mm2)。
+
+        τh = PH / (h'・(2・L + D + 2・h'))
+
+    ``effective_thickness`` は h'(水平方向の押抜きせん断力に抵抗する
+    フーチングの有効厚さ)。垂直方向の押抜きせん断に用いる h とは別の値で、
+    出典の計算例でも導出式は示されず利用者が与える値として扱われている
+    ため、本関数でも呼び出し側が明示的に与える設計とした。
+
+    最外周杭のフーチング縁端距離が標準値(1.0D)以上であれば本照査は不要
+    (:attr:`EdgeDistance.needs_horizontal_punching_check` を参照)。
+
+    出典: Kui_5 6.2(3)2)(第43回)。既設鋼管杭(L=D=0.6m)PH=100.3kN,
+    h'=2.45m, D=0.6m → τh=0.006 N/mm²(本式 0.00611)、増し杭
+    (L=0.1m)PH=167.1kN, h'=2.45m, D=1.0m → τh=0.011 N/mm²
+    (本式 0.01118)と一致確認済み。確度C。
+    """
+    if diameter <= 0 or embedment <= 0 or effective_thickness <= 0:
+        raise ValueError("杭径・埋込み長・有効厚さは正の値である必要があります")
+    denom = effective_thickness * (
+        2.0 * embedment + diameter + 2.0 * effective_thickness
+    )
+    return abs(shear) / denom / 1000.0
+
+
 def check_pile_head(
     pile_diameter: float,
     footing_height: float,
@@ -130,6 +205,7 @@ def check_pile_head(
     embedment: float = STANDARD_EMBEDMENT,
     footing: Footing | None = None,
     arrangement: PileArrangement | None = None,
+    include_moment_in_bearing: bool = False,
 ) -> PileHeadResult:
     """杭頭結合部を照査する。
 
@@ -139,8 +215,11 @@ def check_pile_head(
     ``footing`` と ``arrangement`` を与えると縁端距離も評価する。
 
     .. note::
-       ``shear`` と ``moment`` は現時点で照査に用いていない。これらに対する
-       抵抗は杭頭補強鉄筋・仮想RC断面が担うが、いずれも未実装のため。
+       ``moment`` は既定では水平支圧応力度の算定に用いない(方法B の式に
+       合わせている。:func:`horizontal_bearing_stress` の説明を参照)。
+       方法Aとして評価したい場合は ``include_moment_in_bearing=True`` を
+       指定すること。杭頭補強鉄筋の応力度・定着長・仮想RC断面の照査は
+       本関数の対象外(未実装。docs/VERIFICATION.md 第43回を参照)。
     """
     if fck not in TAU_A_PUNCHING:
         raise ValueError(
@@ -148,24 +227,53 @@ def check_pile_head(
             f"σck = {sorted(TAU_A_PUNCHING)})の範囲外です。"
             "適用する設計条件・発注者基準を別途確認してください"
         )
+    if fck not in SIGMA_CVA_PILE_HEAD_BEARING:
+        raise ValueError(
+            f"σck={fck} は杭頭支圧応力度 σcva の表(σck = "
+            f"{sorted(SIGMA_CVA_PILE_HEAD_BEARING)})の範囲外です。"
+            "適用する設計条件・発注者基準を別途確認してください"
+        )
     increase = STRESS_INCREASE[case.value]
-    area = punching_shear_area(pile_diameter, footing_height, embedment)
     pile_area = math.pi * pile_diameter**2 / 4.0
 
-    # 押込み力に対する押抜きせん断(引抜き時も絶対値で照査)。
+    # 押込み力に対する押抜きせん断。有効高さ h はフーチング厚から埋込み長を
+    # 差し引いた値。
+    # 引抜き力に対する押抜きせん断は**専用の抵抗厚さ ht(道示Ⅳ 12.9.3、
+    # 標準100mm)**を使う、押込み側とは別の仮想破壊面(Kui_5 6.2、第43回)。
+    # 従来は押込み側の面積を引抜き時にも流用しており、ht(通常はフーチング厚
+    # より薄い)より過大な面積となって応力度を過小評価していた(非安全側)。
+    if axial >= 0.0:
+        area = punching_shear_area(pile_diameter, footing_height, embedment)
+        tau = axial / area / 1000.0  # kN/m2 → N/mm2
+    else:
+        area = punching_shear_area(
+            pile_diameter, PULL_OUT_RESISTANCE_THICKNESS, embedment=0.0
+        )
+        tau = abs(axial) / area / 1000.0
     # 杭頭結合部では水平力・曲げモーメントが同時に作用し得るため、
     # 荷重の組合せによる τa3 の割増しは行わない(地震時も表の値のまま)。
-    tau = abs(axial) / area / 1000.0  # kN/m2 → N/mm2
     tau_a = TAU_A_PUNCHING[fck]
 
-    # 押込み力に対する支圧。コンクリートの許容支圧応力度は拘束効果により
-    # 曲げ圧縮より大きく採れるが、安全側に σca を用いる。
+    # 押込み力に対する垂直支圧。許容値は SIGMA_CVA_PILE_HEAD_BEARING
+    # (第43回。曲げ圧縮の SIGMA_CA_CONCRETE とは別表で、σck=24 で
+    # 7.20 対 8.00 と 11% 小さい)。
     sigma_bearing = max(0.0, axial) / pile_area / 1000.0
-    sigma_ba = SIGMA_CA_CONCRETE[fck] * increase
+    sigma_ba = SIGMA_CVA_PILE_HEAD_BEARING[fck] * increase
+
+    # 水平力・モーメントに対する水平支圧。許容値は垂直支圧と同じ表
+    # (Kui_5 で σcva = σcha を確認済み)。
+    sigma_ch = horizontal_bearing_stress(
+        shear,
+        pile_diameter,
+        embedment,
+        moment=moment if include_moment_in_bearing else 0.0,
+    )
+    sigma_cha = sigma_ba
 
     checks = [
         StressCheck("杭頭押抜きせん断応力度", tau, tau_a),
         StressCheck("杭頭支圧応力度", sigma_bearing, sigma_ba),
+        StressCheck("杭頭水平支圧応力度", sigma_ch, sigma_cha),
     ]
     # .. note::
     #    支圧については割増しの扱いが原典で未確認のため、通常どおり

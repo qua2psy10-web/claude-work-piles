@@ -23,6 +23,8 @@ from core.section.checks import MaterialSpec, check_section
 from core.section.pile_head import (
     check_pile_head,
     edge_distances,
+    horizontal_bearing_stress,
+    horizontal_edge_punching_shear,
     punching_shear_area,
 )
 from core.section.rc import RebarLayout
@@ -375,10 +377,11 @@ def test_pile_head_checks():
     tau = next(c for c in result.checks if "押抜き" in c.name)
     assert tau.stress == pytest.approx(2000.0 / result.punching_area / 1000.0)
     assert tau.allowable == pytest.approx(0.90)
-    # 支圧は軸力を杭断面積で除した値、許容値は安全側に σca を用いる
-    bearing = next(c for c in result.checks if "支圧" in c.name)
+    # 支圧は軸力を杭断面積で除した値。許容値は SIGMA_CVA_PILE_HEAD_BEARING
+    # (第43回。曲げ圧縮の σca=8.0 とは別表で 7.2)
+    bearing = next(c for c in result.checks if c.name == "杭頭支圧応力度")
     assert bearing.stress == pytest.approx(2000.0 / (math.pi / 4) / 1000.0)
-    assert bearing.allowable == pytest.approx(8.0)
+    assert bearing.allowable == pytest.approx(7.2)
 
 
 def test_punching_shear_allowable_is_not_increased():
@@ -488,10 +491,76 @@ def test_check_pile_head_includes_edge_distance_when_given():
     assert without.edge_distance is None
 
 
-def test_pile_head_uplift_uses_absolute_value():
+def test_pile_head_uplift_uses_the_pull_out_resistance_thickness():
+    """引抜き時の押抜きせん断は専用の抵抗厚さ ht を使い、押込み側の面積とは
+    異なること(Kui_5 6.2、第43回)。
+
+    従来は押込み側の面積(フーチング厚基準、ここでは h=1.4m)を引抜き時にも
+    流用していたが、正しくは ht(標準 100mm、押込み側よりずっと薄い)を
+    使う専用の仮想破壊面であり、応力度は押込み側よりはるかに大きくなる。
+    """
+    from core.standards import PULL_OUT_RESISTANCE_THICKNESS
+
     push = check_pile_head(1.0, 1.5, 24, LoadCase.PERMANENT, 2000.0, 0.0, 0.0)
     pull = check_pile_head(1.0, 1.5, 24, LoadCase.PERMANENT, -2000.0, 0.0, 0.0)
-    assert push.checks[0].stress == pytest.approx(pull.checks[0].stress)
+    push_tau = push.checks[0]
+    pull_tau = pull.checks[0]
+    expected_pull_area = punching_shear_area(
+        1.0, PULL_OUT_RESISTANCE_THICKNESS, embedment=0.0
+    )
+    assert pull_tau.stress == pytest.approx(2000.0 / expected_pull_area / 1000.0)
+    assert pull_tau.stress > push_tau.stress
+
+
+# --- 水平支圧応力度・水平方向押抜きせん断(Kui_5 6.2、第43回)---------------
+
+
+def test_horizontal_bearing_stress_matches_method_a_with_moment():
+    """方法A(既設鋼管杭、L=D=0.6m)はモーメント項を含む式を使うこと。"""
+    sigma_ch = horizontal_bearing_stress(
+        shear=100.3, diameter=0.6, embedment=0.6, moment=90.0
+    )
+    assert sigma_ch == pytest.approx(2.78, abs=0.01)
+
+
+def test_horizontal_bearing_stress_matches_method_b_without_moment():
+    """方法B(増し杭、L=0.1m)はモーメント項を含まない式を使うこと。
+
+    モーメント抵抗は仮想RC断面が負担するため、水平支圧応力度の算定には
+    水平力 PH のみを用いる(モーメントを与えても既定では無視される)。
+    """
+    sigma_ch = horizontal_bearing_stress(shear=167.1, diameter=1.0, embedment=0.1)
+    assert sigma_ch == pytest.approx(1.67, abs=0.01)
+
+
+def test_check_pile_head_bearing_can_opt_into_moment():
+    """``include_moment_in_bearing=True`` で方法Aのモーメント項を有効化できる。"""
+    without_moment = check_pile_head(
+        pile_diameter=0.6, footing_height=1.2, fck=24, case=LoadCase.LEVEL1_EQ,
+        axial=1040.9, shear=100.3, moment=90.0, embedment=0.6,
+    )
+    with_moment = check_pile_head(
+        pile_diameter=0.6, footing_height=1.2, fck=24, case=LoadCase.LEVEL1_EQ,
+        axial=1040.9, shear=100.3, moment=90.0, embedment=0.6,
+        include_moment_in_bearing=True,
+    )
+    ch_without = next(c for c in without_moment.checks if "水平支圧" in c.name)
+    ch_with = next(c for c in with_moment.checks if "水平支圧" in c.name)
+    assert ch_without.stress < ch_with.stress
+    assert ch_with.stress == pytest.approx(2.78, abs=0.01)
+
+
+def test_horizontal_edge_punching_shear_matches_both_connection_methods():
+    """既設鋼管杭(方法A)・増し杭(方法B)の両方で τh が一致すること。"""
+    tau_a = horizontal_edge_punching_shear(
+        shear=100.3, diameter=0.6, embedment=0.6, effective_thickness=2.45
+    )
+    assert tau_a == pytest.approx(0.006, abs=0.0005)
+
+    tau_b = horizontal_edge_punching_shear(
+        shear=167.1, diameter=1.0, embedment=0.1, effective_thickness=2.45
+    )
+    assert tau_b == pytest.approx(0.011, abs=0.0005)
 
 
 # --- 負の周面摩擦力 ---------------------------------------------------------
