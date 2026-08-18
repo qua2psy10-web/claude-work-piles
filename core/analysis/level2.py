@@ -68,8 +68,11 @@ from core.standards import (
     ALLOWABLE_DUCTILITY_CIP_HIGH_GRADE,
     ALLOWABLE_DUCTILITY_PILE,
     ALLOWABLE_FOOTING_ROTATION,
+    CONCRETE_AXIAL_CAPACITY_COEF,
+    EC_CONCRETE,
     GROUP_PILE_SPACING_RATIO,
     HIGH_GRADE_REBAR_FOR_DUCTILITY,
+    REBAR_YIELD_POINT,
     SIGMA_Y_STEEL,
     E0Method,
     StructureType,
@@ -102,8 +105,14 @@ LIMITATIONS: tuple[str, ...] = (
     "場所打ちRC杭・PHC杭・SC杭のトリリニア型(ひび割れ C・降伏 Y・終局 U)は"
     "未実装で、これらの杭種では My を入力する必要がある。"
     "いずれの杭種でも、塑性ヒンジ後の曲げ剛性低下は追跡していない。",
-    "押込み支持力の上限値 Pu・引抜き抵抗力の上限値 Pt は、許容応力度設計法の"
-    "式で安全率を 1 とした値として算定している(道示Ⅴ の規定との照合が未了)。",
+    "押込み支持力の上限値 Pu・引抜き抵抗力の上限値 Pt は、**地盤から決まる値**"
+    "(許容応力度設計法の式で安全率を 1 とした値)と、**杭体から決まる値**"
+    "(場所打ち杭で軸方向鉄筋を入力した場合のみ。Rpu = 0.85σck・Ac + σy・As、"
+    "Ptu = σy・As)の小さいほうとしている。杭体側は他社製品の計算書サンプルと"
+    "一致するが**道示の原典は未照合**であり、場所打ち杭以外では算定しない"
+    "(その場合は地盤から決まる値のみとなり、**引抜き側を過大評価しうる**)。"
+    "押込み側は、計算例が杭の重量 W を控除していないのに対し本ソフトは"
+    "控除している(本ソフトのほうが小さく安全側)。",
     "群杭効果のうち、杭中心間隔が 2.5D 未満のときの水平方向地盤反力係数の"
     "補正係数 μ は実装したが(分布バネモデルでは適用しない)、"
     "**仮想ケーソン基礎とみなした押込み支持力の上限**と支持力のブロック破壊、"
@@ -117,6 +126,71 @@ LIMITATIONS: tuple[str, ...] = (
     "こちらは慣性力・土圧の算定に用いるもので、本ソフトはレベル2の荷重を"
     "利用者から与えられる前提のため算定していない。)",
 )
+
+
+@dataclass(frozen=True)
+class PileBodyAxialLimits:
+    """杭体そのものから決まる軸方向支持力の上限値 (kN)。
+
+        押込み Rpu = 0.85・σck・Ac + σy・As
+        引抜き Ptu = σy・As
+
+    地盤がいくら支えても杭体が潰れる・鉄筋が降伏する以上の力は伝わらない。
+    地盤から決まる上限値との**小さいほう**が実際の上限になる。
+    """
+
+    push: float  # Rpu
+    pull: float  # Ptu
+    concrete_area: float  # Ac (m2)
+    rebar_area: float  # As (m2)
+
+
+def pile_body_axial_limits(
+    pile: PileSpec,
+    rebar: "RebarLayout",
+    fck: int,
+    rebar_grade: str = "SD345",
+) -> PileBodyAxialLimits:
+    """場所打ち杭の杭体から決まる軸方向支持力の上限値。
+
+        Rpu = 0.85・σck・Ac + σy・As    (押込み)
+        Ptu = σy・As                     (引抜き)
+
+    ``Ac`` は杭体コンクリートの全断面積、``As`` は軸方向鉄筋の断面積。
+
+    .. note::
+       出典は他社製品の計算書サンプル(第35回)であり**道示の原典は未照合**
+       である。φ1200・σck=24・D25×24本 に対し 27267 kN と示されており、
+       本式で 27267.3 kN となって一致する。引抜き側は同サンプルの設計極限
+       引抜力 4195 kN が σy・As = 4195.5 kN と一致することから判断した。
+
+    .. important::
+       **場所打ち杭のみ**。鋼管杭・既製杭の杭体上限値の式は確認できて
+       いないので、当てずっぽうを避けて対象外としている。
+    """
+    if pile.pile_type != PileType.CAST_IN_PLACE:
+        raise ValueError(
+            f"{pile.pile_type.value}の杭体から決まる支持力の上限値は未実装です"
+            "(場所打ち杭のみ。式が確認できていません)"
+        )
+    if fck not in EC_CONCRETE:
+        raise ValueError(f"σck={fck} は未対応です")
+    if rebar_grade not in REBAR_YIELD_POINT:
+        raise ValueError(
+            f"鉄筋材質 {rebar_grade} の降伏点が未定義です。"
+            f"対応材質: {sorted(REBAR_YIELD_POINT)}"
+        )
+    concrete_area = math.pi * pile.diameter**2 / 4.0
+    rebar_area = rebar.total_area
+    sigma_ck = fck * 1000.0  # N/mm2 → kN/m2
+    sigma_y = REBAR_YIELD_POINT[rebar_grade] * 1000.0
+    steel = sigma_y * rebar_area
+    return PileBodyAxialLimits(
+        push=CONCRETE_AXIAL_CAPACITY_COEF * sigma_ck * concrete_area + steel,
+        pull=steel,
+        concrete_area=concrete_area,
+        rebar_area=rebar_area,
+    )
 
 
 @dataclass(frozen=True)
@@ -142,23 +216,36 @@ class AxialSpringModel:
             raise ValueError("支持力の上限値が不正です")
 
     @classmethod
-    def from_bearing(cls, kv: float, bearing: BearingCapacity) -> "AxialSpringModel":
+    def from_bearing(
+        cls,
+        kv: float,
+        bearing: BearingCapacity,
+        body: "PileBodyAxialLimits | None" = None,
+    ) -> "AxialSpringModel":
         """支持力計算の結果から上限値を求める。
 
-        許容押込み支持力 Ra =(Ru − Ws)/ n + Ws − W で n = 1 とすると
-        Pu = Ru − W、許容引抜き力 Pa = Ruf / n + W で n = 1 とすると
-        Pt = Ruf + W となる。
+        **地盤から決まる上限値**は、許容応力度設計法の式で安全率を 1 と
+        して求める。許容押込み支持力 Ra =(Ru − Ws)/ n + Ws − W で n = 1
+        とすると Pu = Ru − W、許容引抜き力 Pa = Ruf / n + W で n = 1 と
+        すると Pt = Ruf + W となる。
+
+        ``body`` を与えると、**杭体から決まる上限値**との小さいほうを採る
+        (:func:`pile_body_axial_limits`)。杭体側を入れないと引抜きの
+        上限値を大きく過大評価することがある(第35回の計算例では 1.47 倍)。
 
         .. warning::
-           この「安全率を 1 とする」という導出は、既に照合済みの
-           許容応力度設計法の式から一貫させたものであり、道示Ⅴ が
-           レベル2用に別途定める上限値との照合は済んでいない。
+           「安全率を 1 とする」という導出は、既に照合済みの許容応力度
+           設計法の式から一貫させたものであり、道示Ⅴ が定める上限値との
+           照合は済んでいない。第35回に計算例と突き合わせたところ、
+           **押込み側は計算例が W を控除していない**(本ソフトのほうが
+           小さく安全側)という違いが残っている。
         """
-        return cls(
-            kv=kv,
-            push_limit=bearing.ru - bearing.w_pile,
-            pull_limit=bearing.skin_resistance + bearing.w_pile,
-        )
+        push = bearing.ru - bearing.w_pile
+        pull = bearing.skin_resistance + bearing.w_pile
+        if body is not None:
+            push = min(push, body.push)
+            pull = min(pull, body.pull)
+        return cls(kv=kv, push_limit=push, pull_limit=pull)
 
     def reaction(self, disp: float) -> float:
         """変位 δ (m) に対する軸力 (kN、押込み正)。"""
@@ -1072,7 +1159,12 @@ def run_level2(
         pile, profile, footing.embedment, reduction=reduction
     )
     kv = axial_spring(pile, section)
-    axial = AxialSpringModel.from_bearing(kv, bearing)
+    body_limits = None
+    if pile.pile_type == PileType.CAST_IN_PLACE and rebar is not None:
+        body_limits = pile_body_axial_limits(
+            pile, rebar, fck, rebar_grade or "SD345"
+        )
+    axial = AxialSpringModel.from_bearing(kv, bearing, body=body_limits)
     has_k_ep = all(layer.k_ep is not None for layer in profile.layers)
     use_bnwf_actual = use_bnwf and has_k_ep
     # 分布バネモデルでは DE を**節点ごとに**乗じるので、ここでは低減前の

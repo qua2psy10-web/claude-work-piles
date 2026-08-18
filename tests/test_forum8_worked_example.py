@@ -444,3 +444,148 @@ def test_rebar_nominal_area_confirmed_again_by_the_anchorage_calculation():
     assert REBAR.bar_area * 1.0e6 == pytest.approx(506.7)
     lo = 200.0 * 506.7 / (1.6 * 80.0)
     assert lo == pytest.approx(792.0, abs=0.5)
+
+
+# --- 7.6 予備計算(第36回に追加された章)-----------------------------------
+
+
+def test_characteristic_value_and_loading_width_match_7_6_2():
+    """7.6.2 の β・1/β・平均 α·E0・BH・kH0 が一致すること。
+
+    計算例は「**※地震時BH算出時のα・Eoの取扱い:常時**」と明記しており、
+    第29回に修正した「BH は常時の条件で定める」がそのまま裏付けられる。
+    """
+    from core.capacity.springs import lateral_springs, mean_e0
+    from core.models import LoadCase, SoilLayer, SoilProfile, SoilType
+
+    profile = SoilProfile(
+        layers=[
+            SoilLayer(
+                name="1", soil_type=SoilType.CLAY, thickness=5.0, n_value=2.0,
+                e0=5600.0, gamma_t=16.0, gamma_sat=16.0, cohesion=30.0,
+            ),
+            SoilLayer(
+                name="2", soil_type=SoilType.CLAY, thickness=12.0, n_value=3.8,
+                e0=10640.0, gamma_t=16.0, gamma_sat=16.0, cohesion=30.0,
+            ),
+            SoilLayer(
+                name="3", soil_type=SoilType.SAND, thickness=6.0, n_value=20.0,
+                e0=56000.0, gamma_t=18.0, gamma_sat=18.0, phi=30.0,
+            ),
+            SoilLayer(
+                name="4", soil_type=SoilType.SAND, thickness=2.0, n_value=50.0,
+                e0=140000.0, gamma_t=20.0, gamma_sat=20.0, phi=40.0,
+            ),
+        ],
+        gwl=0.0,
+    )
+    springs = lateral_springs(PILE, SECTION, profile, 0.0, LoadCase.PERMANENT)
+    assert INERTIA == pytest.approx(0.101787619, rel=1e-6)
+    assert springs.beta == pytest.approx(0.149629, rel=1e-5)
+    assert 1.0 / springs.beta == pytest.approx(6.6832, abs=0.001)
+    assert mean_e0(profile, 0.0, 1.0 / springs.beta) == pytest.approx(6869.3, abs=0.2)
+    assert springs.bh == pytest.approx(2.8319, abs=0.0002)
+    assert springs.e0 / 0.3 == pytest.approx(22897.7, abs=0.5)
+
+
+@pytest.mark.parametrize(
+    "k_ep, sigma_v_eff, cohesion, expected",
+    [
+        (1.000, 0.00, 30.0, 60.00),      # 層1 上端
+        (1.000, 34.95, 30.0, 94.95),     # 層1 下端
+        (1.000, 118.83, 30.0, 178.83),   # 層2 下端
+        (3.505, 118.83, 0.0, 416.52),    # 層3 上端(φ=30)
+        (3.505, 172.77, 0.0, 605.59),    # 層3 下端
+        (5.996, 172.77, 0.0, 1035.94),   # 層4 上端(φ=40)
+        (5.996, 194.75, 0.0, 1167.73),   # 層4 下端
+    ],
+)
+def test_passive_pressure_formula_matches_7_6_3(
+    k_ep, sigma_v_eff, cohesion, expected
+):
+    """受働土圧強度 pEp = KEp・σ'v + 2c・√KEp が一致すること。
+
+    計算例は壁面摩擦角を **δE = −φ/6** と定めており、そこから KEp を
+    求めている(φ=30 → 3.505、φ=40 → 5.996)。本ソフトは KEp を
+    利用者入力に委ねているので、KEp を与えたうえで式だけを照合する。
+    """
+    got = k_ep * sigma_v_eff + 2.0 * cohesion * math.sqrt(k_ep)
+    assert got == pytest.approx(expected, abs=0.05)
+
+
+def test_non_front_row_halving_applies_to_sand_only():
+    """砂質土のみ最前列以外を 1/2 とすること(7.6.3 の表)。
+
+    計算例の pHu:
+        層1・2(粘性土): 1列目 = 2列目以降(60.00 / 94.95 / 142.43 / 268.25)
+        層3・4(砂質土): 2列目以降がちょうど 1/2
+                        (1041.30 → 520.65、2589.85 → 1294.93)
+    """
+    from core.standards import NON_FRONT_ROW_FACTOR_SAND
+
+    assert NON_FRONT_ROW_FACTOR_SAND == pytest.approx(0.5)
+    for front, back in ((1041.30, 520.65), (1513.98, 756.99),
+                        (2589.85, 1294.93), (2919.32, 1459.66)):
+        assert back == pytest.approx(front * NON_FRONT_ROW_FACTOR_SAND, abs=0.01)
+
+
+def test_pile_body_axial_limits_match_7_6_4():
+    """杭体から決まる支持力の上限値が計算例と一致すること。
+
+    7.6.4: Rpu = 0.85・σck・Ac + σy・As = 27267 kN
+    (φ1200、σck = 24 N/mm²、D25 × 24本、σy = 345 N/mm²)
+
+    引抜き側は 7.6.5 の本文を入手できていないが、同サンプルの
+    **設計極限引抜力 PTu = 4195 kN が σy・As = 4195.5 kN と一致**する。
+    """
+    from core.analysis.level2 import pile_body_axial_limits
+
+    limits = pile_body_axial_limits(PILE, REBAR, fck=24, rebar_grade="SD345")
+    assert limits.concrete_area == pytest.approx(1.131, abs=0.001)
+    assert limits.rebar_area * 1.0e4 == pytest.approx(121.608, abs=1e-3)
+    assert limits.push == pytest.approx(27267.0, abs=1.0)
+    assert limits.pull == pytest.approx(4195.0, abs=1.0)
+
+
+def test_pile_body_limit_governs_the_uplift_and_is_the_safe_side():
+    """引抜きは杭体から決まる上限値が支配し、入れないと 4 割超の過大評価になる。
+
+    倍率は杭の重量 W の扱いで少し変わる。計算例は「浮力無視」のケースなので
+    **乾燥重量** w = 27.71 kN/m(= 24.5 × Ac)を使い、W = 692.75 kN で
+    Ruf + W = 6181.8 → 1.47 倍。本ソフトは地下水位から**浮力を控除した**
+    W = 415.0 kN(= 16.6 kN/m × 25)を使うので 5904.0 → 1.41 倍になる。
+    浮力を引くほうが W が小さく、引抜きに対しては**安全側**である。
+    """
+    from core.analysis.level2 import AxialSpringModel, pile_body_axial_limits
+    from core.capacity.bearing import compute_bearing_capacity
+
+    bearing = compute_bearing_capacity(
+        PILE, _bearing_profile(), 0.0, exclude_tip_zone=False
+    )
+    body = pile_body_axial_limits(PILE, REBAR, fck=24, rebar_grade="SD345")
+
+    without = AxialSpringModel.from_bearing(KV, bearing)
+    with_body = AxialSpringModel.from_bearing(KV, bearing, body=body)
+
+    assert with_body.pull_limit == pytest.approx(4195.0, abs=1.0)
+    assert without.pull_limit / with_body.pull_limit == pytest.approx(1.41, abs=0.01)
+    # 計算例の乾燥重量を使うと 1.47 倍。いずれにせよ 4 割超の過大評価
+    assert (5489.0 + 692.75) / 4195.5 == pytest.approx(1.47, abs=0.01)
+    assert with_body.pull_limit < without.pull_limit  # 入れるほうが安全側
+    # 押込みは地盤側が支配する(杭体 27267 ≫ 地盤 8189)
+    assert with_body.push_limit == pytest.approx(without.push_limit)
+
+
+def test_pile_body_limits_are_only_for_cast_in_place():
+    """場所打ち杭以外は式が確認できていないので拒むこと。"""
+    from core.analysis.level2 import pile_body_axial_limits
+
+    steel = PileSpec(
+        pile_type=PileType.STEEL_PIPE,
+        method=ConstructionMethod.DRIVEN,
+        diameter=1.2,
+        length=25.0,
+        wall_thickness=12.0,
+    )
+    with pytest.raises(ValueError, match="場所打ち杭のみ"):
+        pile_body_axial_limits(steel, REBAR, fck=24)
