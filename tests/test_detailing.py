@@ -108,8 +108,9 @@ def test_minimum_rebar_uses_the_larger_of_a1_and_a2():
     assert r.required_min_area == pytest.approx(
         MIN_REBAR_RATIO_AXIAL * r.required_concrete_area
     )
-    # 24-D25 は十分に足りている
-    assert r.provided_area == pytest.approx(24 * math.pi * 25.0**2 / 4.0)
+    # 24-D25 は十分に足りている。D25 の**公称断面積**は 506.7 mm²
+    # (π・25²/4 = 490.9 mm² ではない。JIS G 3112。第34回に修正)
+    assert r.provided_area == pytest.approx(24 * 506.7)
     check = next(c for c in r.checks if "最小鉄筋量" in c.name)
     assert check.kind == "min" and check.ok
 

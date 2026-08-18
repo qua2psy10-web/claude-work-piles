@@ -12,8 +12,11 @@ REBAR = RebarLayout(count=24, diameter_mm=25.0, cover_mm=125.0)
 
 
 def test_rebar_geometry():
-    assert REBAR.bar_area == pytest.approx(math.pi * 0.025**2 / 4)
-    assert REBAR.total_area == pytest.approx(24 * math.pi * 0.025**2 / 4)
+    # D25 の**公称断面積**は 506.7 mm²(JIS G 3112)。呼び名の直径の円の
+    # 面積 π・25²/4 = 490.9 mm² より 3.2% 大きい(異形棒鋼のリブ・節による)
+    assert REBAR.bar_area == pytest.approx(506.7e-6)
+    assert REBAR.bar_area > math.pi * 0.025**2 / 4
+    assert REBAR.total_area == pytest.approx(24 * 506.7e-6)
     assert REBAR.radius(D) == pytest.approx(0.375)
     ys = REBAR.positions(D)
     assert len(ys) == 24

@@ -30,6 +30,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from core.standards import REBAR_NOMINAL_AREA
+
 
 @dataclass(frozen=True)
 class SteelFiber:
@@ -90,8 +92,16 @@ class RebarLayout:
 
     @property
     def bar_area(self) -> float:
-        """鉄筋1本の断面積 (m2)"""
-        return math.pi * (self.diameter_mm / 1000.0) ** 2 / 4.0
+        """鉄筋1本の**公称断面積** (m2)(JIS G 3112)。
+
+        異形棒鋼はリブ・節があるため、公称断面積は呼び名の直径の円の面積とは
+        一致しない(D25 では 506.7 mm² に対し π・25²/4 = 490.9 mm² で 3.2%
+        小さい)。表にない呼び径は円の面積で代用する。
+        """
+        area_mm2 = REBAR_NOMINAL_AREA.get(self.diameter_mm)
+        if area_mm2 is None:
+            area_mm2 = math.pi * self.diameter_mm**2 / 4.0
+        return area_mm2 / 1.0e6
 
     @property
     def total_area(self) -> float:

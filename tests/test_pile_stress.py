@@ -145,9 +145,10 @@ def test_cast_in_place_uses_the_fixed_young_modulus_ratio_15():
     )
     detail = result.rc_detail
     assert detail is not None
-    # n = 15 での値。n = 8 なら鉄筋 122.7、コンクリート 13.886 になる
-    assert detail.sigma_s_tension == pytest.approx(145.332, abs=0.01)
-    assert detail.sigma_c == pytest.approx(11.038, abs=0.01)
+    # n = 15 での値。n = 8 なら鉄筋が約 18% 小さく出る。
+    # 値は第34回に D25 の公称断面積(506.7 mm²)へ改めた分だけ動いている
+    assert detail.sigma_s_tension == pytest.approx(141.953, abs=0.01)
+    assert detail.sigma_c == pytest.approx(10.906, abs=0.01)
 
     # 独立に、同じ断面を n = 15 で解いた結果と一致すること
     from core.section.rc import analyze_circular_rc
