@@ -841,3 +841,76 @@ def test_allowable_capacity_with_liquefaction_matches():
     assert normal.allowable_pull(LoadCase.PERMANENT) == pytest.approx(2064, abs=1)
     assert normal.allowable_pull(LoadCase.LEVEL1_EQ) == pytest.approx(3849, abs=1)
     assert liquefied.allowable_pull(LoadCase.LEVEL1_EQ) == pytest.approx(3413, abs=1)
+
+
+# --- Kui_3 の 5.2 杭軸方向鉛直バネ定数(第40回)-----------------------------
+#
+# 鋼管ソイルセメント杭の Kv は他工法と異なり、鋼管とソイルセメント固化体の
+# **合成剛性**を用いる。第40回に発見・修正した(当初の実装は鋼管径を
+# L/D に使っており Kv を 22% 過大評価していた)。
+
+
+def test_steel_pipe_soil_cement_kv_uses_the_composite_stiffness():
+    """Kv = a・(Asp・Esp + Asc・Esc)/L が計算例と一致すること。
+
+    Kui_3 の 5.2(上杭区間、t=19.0mm):
+        a = 0.040・(L/Dsc) + 0.15 = 1.3860     ← L/Dsc(固化体径)!
+        Asp = 0.04411 m²(鋼管の純断面積)
+        Esp = 2.00×10⁷ kN/m²
+        Asc = 0.74129 m²(固化体の純断面積)
+        Esc = 5.00×10⁵ kN/m²
+        Kv = 412312 kN/m
+    """
+    from core.capacity.section import pile_section
+    from core.standards import ESC_SOIL_CEMENT_MODULUS, KV_A_COEF
+
+    assert KV_A_COEF["鋼管ソイルセメント"] == (0.040, 0.15)
+    assert ESC_SOIL_CEMENT_MODULUS == pytest.approx(5.0e5)
+
+    pile = PileSpec(
+        pile_type=PileType.STEEL_PIPE_SOIL_CEMENT,
+        method=ConstructionMethod.STEEL_PIPE_SOIL_CEMENT,
+        diameter=0.8, length=30.9, wall_thickness=19.0,
+        soil_cement_diameter=1.0,
+    )
+    section = pile_section(pile)
+    assert section.area == pytest.approx(0.04411, abs=1e-5)  # Asp
+
+    kv = axial_spring(pile, section)
+    assert kv == pytest.approx(412312, rel=1e-4)
+
+
+def test_steel_pipe_soil_cement_kv_uses_dsc_not_the_steel_diameter():
+    """a = slope・(L/Dsc)+ intercept の D は固化体径であり、鋼管径ではないこと。
+
+    鋼管径(0.8m)を使うと a = 0.04×(30.9/0.8)+0.15 = 1.695 となり、
+    Kv が 504234 kN/m(22% 過大)になる。固化体径(1.0m)を使うと
+    a = 1.386、Kv = 412312 kN/m で計算例と一致する。
+    """
+    from core.capacity.section import pile_section
+
+    pile = PileSpec(
+        pile_type=PileType.STEEL_PIPE_SOIL_CEMENT,
+        method=ConstructionMethod.STEEL_PIPE_SOIL_CEMENT,
+        diameter=0.8, length=30.9, wall_thickness=19.0,
+        soil_cement_diameter=1.0,
+    )
+    section = pile_section(pile)
+    kv = axial_spring(pile, section)
+    wrong_with_steel_diameter = 504234.4
+    assert kv == pytest.approx(412312, rel=1e-4)
+    assert kv < wrong_with_steel_diameter
+    assert kv / wrong_with_steel_diameter == pytest.approx(1.0 / 1.2229, rel=1e-3)
+
+
+def test_steel_pipe_soil_cement_kv_requires_soil_cement_diameter():
+    from core.capacity.section import pile_section
+
+    pile = PileSpec(
+        pile_type=PileType.STEEL_PIPE_SOIL_CEMENT,
+        method=ConstructionMethod.STEEL_PIPE_SOIL_CEMENT,
+        diameter=0.8, length=30.9, wall_thickness=19.0,
+    )
+    section = pile_section(pile)
+    with pytest.raises(ValueError, match="固化体径"):
+        axial_spring(pile, section)

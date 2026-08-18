@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from dataclasses import dataclass
 
 from core.models.loads import LoadCase
-from core.models.pile import PileSpec
+from core.models.pile import ConstructionMethod, PileSpec
 from core.models.soil import SoilProfile
 
 if TYPE_CHECKING:  # 循環インポートを避ける
@@ -32,6 +32,7 @@ if TYPE_CHECKING:  # 循環インポートを避ける
 from core.standards import (
     ALPHA_KH,
     E0_FROM_N,
+    ESC_SOIL_CEMENT_MODULUS,
     GROUP_PILE_KH_COEF,
     GROUP_PILE_SPACING_RATIO,
     KV_A_COEF,
@@ -104,7 +105,47 @@ def group_pile_factor(spacing: float, diameter: float) -> float:
 
 
 def axial_spring(pile: PileSpec, section: PileSection) -> float:
-    """軸方向バネ定数 Kv (kN/m)(道示Ⅳ 12.6.1)。"""
+    """軸方向バネ定数 Kv (kN/m)(道示Ⅳ 12.6.1)。
+
+        Kv = a・Ap・Ep / L,  a = slope・(L/D) + intercept(工法別)
+
+    **鋼管ソイルセメント杭のみ例外**で、鋼管とソイルセメント固化体の
+    合成剛性を用いる(第40回に計算例と 0.005% で一致することを確認)。
+
+        a = slope・(L / Dsc) + intercept   ← **Dsc(固化体径)を使う**
+        Kv = a・(Asp・Esp + Asc・Esc) / L
+        Asp = section.area(鋼管の純断面積。腐食代控除後)
+        Asc = π・Dsc²/4 − Asp(固化体の純断面積。鋼管の内外を固化体が
+              満たすため、固化体径の全断面積から鋼管の実質を差し引く)
+
+    他工法の ``L/D`` は ``pile.diameter`` を使うが、鋼管ソイルセメント杭は
+    ``pile.soil_cement_diameter`` を使う点に注意(計算例に
+    「a = 0.040・(L／Dsc) + 0.15」と明記されている)。当初 ``pile.diameter``
+    (鋼管径)を使って実装し、Kv が 22% 過大になる誤りをテストで検出した。
+    """
+    if pile.method == ConstructionMethod.STEEL_PIPE_SOIL_CEMENT:
+        if pile.soil_cement_diameter is None:
+            raise ValueError(
+                "鋼管ソイルセメント杭の軸方向バネ定数には固化体径 "
+                "soil_cement_diameter (m) の入力が必要です"
+            )
+        slope, intercept = KV_A_COEF[pile.method.value]
+        l_over_d = pile.length / pile.soil_cement_diameter
+        a = slope * l_over_d + intercept
+        if a <= 0:
+            raise ValueError(
+                f"係数 a が非正になりました (a={a:.3f})。L/Dsc={l_over_d:.1f} "
+                "が工法の適用範囲外の可能性があります"
+            )
+        asp = section.area
+        asc = math.pi * pile.soil_cement_diameter**2 / 4.0 - asp
+        if asc <= 0:
+            raise ValueError(
+                f"固化体径 {pile.soil_cement_diameter:g} m が鋼管の断面積に"
+                "対して小さすぎます(固化体の純断面積が非正になりました)"
+            )
+        return a * (asp * section.young + asc * ESC_SOIL_CEMENT_MODULUS) / pile.length
+
     slope, intercept = KV_A_COEF[pile.method.value]
     a = slope * (pile.length / pile.diameter) + intercept
     if a <= 0:
