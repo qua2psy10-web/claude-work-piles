@@ -48,6 +48,7 @@ from core.capacity.lateral_limit import p_hu
 from core.capacity.section import (
     CORROSION_ALLOWANCE_MM,
     corroded_tube,
+    hollow_circle,
     pile_section,
 )
 from core.capacity.springs import (
@@ -72,6 +73,7 @@ from core.standards import (
     EC_CONCRETE,
     GROUP_PILE_SPACING_RATIO,
     HIGH_GRADE_REBAR_FOR_DUCTILITY,
+    PRESTRESSING_STEEL_YIELD_POINT,
     REBAR_YIELD_POINT,
     SIGMA_Y_STEEL,
     E0Method,
@@ -107,10 +109,11 @@ LIMITATIONS: tuple[str, ...] = (
     "いずれの杭種でも、塑性ヒンジ後の曲げ剛性低下は追跡していない。",
     "押込み支持力の上限値 Pu・引抜き抵抗力の上限値 Pt は、**地盤から決まる値**"
     "(許容応力度設計法の式で安全率を 1 とした値)と、**杭体から決まる値**"
-    "(場所打ち杭で軸方向鉄筋を入力した場合のみ。Rpu = 0.85σck・Ac + σy・As、"
-    "Ptu = σy・As)の小さいほうとしている。杭体側は他社製品の計算書サンプルと"
-    "一致するが**道示の原典は未照合**であり、場所打ち杭以外では算定しない"
-    "(その場合は地盤から決まる値のみとなり、**引抜き側を過大評価しうる**)。"
+    "(Rpu = 0.85σck・Ac + σy・As、Ptu = σy・As)の小さいほうとしている。"
+    "杭体側は**場所打ち杭**(軸方向鉄筋を入力した場合)と **PHC杭**"
+    "(PC鋼材量を入力した場合)のみ算定する。他社製品の計算書サンプルとは"
+    "一致するが**道示の原典は未照合**である。算定しない杭種では地盤から"
+    "決まる値のみとなり、**引抜き側を過大評価しうる**。"
     "押込み側は、計算例が杭の重量 W を控除していないのに対し本ソフトは"
     "控除している(本ソフトのほうが小さく安全側)。",
     "群杭効果のうち、杭中心間隔が 2.5D 未満のときの水平方向地盤反力係数の"
@@ -147,49 +150,84 @@ class PileBodyAxialLimits:
 
 def pile_body_axial_limits(
     pile: PileSpec,
-    rebar: "RebarLayout",
-    fck: int,
+    rebar: "RebarLayout | None" = None,
+    fck: int = 24,
     rebar_grade: str = "SD345",
+    prestressing_steel_area: float | None = None,
+    prestressing_steel_yield: float = PRESTRESSING_STEEL_YIELD_POINT,
 ) -> PileBodyAxialLimits:
-    """場所打ち杭の杭体から決まる軸方向支持力の上限値。
+    """杭体から決まる軸方向支持力の上限値。
 
         Rpu = 0.85・σck・Ac + σy・As    (押込み)
         Ptu = σy・As                     (引抜き)
 
-    ``Ac`` は杭体コンクリートの全断面積、``As`` は軸方向鉄筋の断面積。
+    ``Ac`` は杭体コンクリートの断面積、``As`` は鋼材の断面積、``σy`` は
+    その降伏点。杭種により中身が変わる。
+
+    ============ ==================== ==============================
+    杭種         Ac                   As・σy
+    ============ ==================== ==============================
+    場所打ち杭   中実円 πD²/4         軸方向鉄筋 × 鉄筋の降伏点
+    PHC杭        中空円環             PC鋼材量 × PC鋼材の降伏点
+    ============ ==================== ==============================
+
+    PHC杭では ``prestressing_steel_area`` (m²) の入力が必要である
+    (本ソフトは PC鋼材量をモデルに持たないため)。
 
     .. note::
-       出典は他社製品の計算書サンプル(第35回)であり**道示の原典は未照合**
-       である。φ1200・σck=24・D25×24本 に対し 27267 kN と示されており、
-       本式で 27267.3 kN となって一致する。引抜き側は同サンプルの設計極限
-       引抜力 4195 kN が σy・As = 4195.5 kN と一致することから判断した。
+       出典は他社製品の計算書サンプルであり**道示の原典は未照合**である。
+       場所打ち杭 φ1200・σck=24・D25×24本 → 27267 kN(本式 27267.3)、
+       PHC杭 φ800・t=110・σck=80・PC鋼材 25.120cm²・σy=1275 → 19417 kN
+       (本式 19417.2)。引抜き側は同サンプルの 7.6.5 が
+       ``Ppu = σy・As`` と明記している。
 
     .. important::
-       **場所打ち杭のみ**。鋼管杭・既製杭の杭体上限値の式は確認できて
-       いないので、当てずっぽうを避けて対象外としている。
+       **場所打ち杭と PHC杭のみ**。鋼管杭・SC杭・RC杭・H鋼杭の式は確認
+       できていないので、当てずっぽうを避けて対象外としている。
     """
-    if pile.pile_type != PileType.CAST_IN_PLACE:
+    sigma_ck = fck * 1000.0  # N/mm2 → kN/m2
+    if pile.pile_type == PileType.CAST_IN_PLACE:
+        if rebar is None:
+            raise ValueError("場所打ち杭には軸方向鉄筋の入力が必要です")
+        if fck not in EC_CONCRETE:
+            raise ValueError(f"σck={fck} は未対応です")
+        if rebar_grade not in REBAR_YIELD_POINT:
+            raise ValueError(
+                f"鉄筋材質 {rebar_grade} の降伏点が未定義です。"
+                f"対応材質: {sorted(REBAR_YIELD_POINT)}"
+            )
+        concrete_area = math.pi * pile.diameter**2 / 4.0
+        steel_area = rebar.total_area
+        sigma_y = REBAR_YIELD_POINT[rebar_grade] * 1000.0
+    elif pile.pile_type == PileType.PHC:
+        if pile.concrete_thickness is None:
+            raise ValueError(
+                "PHC杭はコンクリート部の肉厚 concrete_thickness (mm) の"
+                "入力が必要です"
+            )
+        if prestressing_steel_area is None or prestressing_steel_area <= 0:
+            raise ValueError(
+                "PHC杭の杭体から決まる支持力の上限値には PC鋼材量 "
+                "prestressing_steel_area (m²) の入力が必要です"
+            )
+        concrete_area, _ = hollow_circle(
+            pile.diameter, pile.concrete_thickness / 1000.0
+        )
+        steel_area = prestressing_steel_area
+        sigma_y = prestressing_steel_yield * 1000.0
+        # PHC杭のコンクリートは σck = 80 が標準。ヤング係数の表引き
+        # (EC_CONCRETE)は範囲外なので行わず、fck をそのまま使う
+    else:
         raise ValueError(
             f"{pile.pile_type.value}の杭体から決まる支持力の上限値は未実装です"
-            "(場所打ち杭のみ。式が確認できていません)"
+            "(場所打ち杭・PHC杭のみ。式が確認できていません)"
         )
-    if fck not in EC_CONCRETE:
-        raise ValueError(f"σck={fck} は未対応です")
-    if rebar_grade not in REBAR_YIELD_POINT:
-        raise ValueError(
-            f"鉄筋材質 {rebar_grade} の降伏点が未定義です。"
-            f"対応材質: {sorted(REBAR_YIELD_POINT)}"
-        )
-    concrete_area = math.pi * pile.diameter**2 / 4.0
-    rebar_area = rebar.total_area
-    sigma_ck = fck * 1000.0  # N/mm2 → kN/m2
-    sigma_y = REBAR_YIELD_POINT[rebar_grade] * 1000.0
-    steel = sigma_y * rebar_area
+    steel = sigma_y * steel_area
     return PileBodyAxialLimits(
         push=CONCRETE_AXIAL_CAPACITY_COEF * sigma_ck * concrete_area + steel,
         pull=steel,
         concrete_area=concrete_area,
-        rebar_area=rebar_area,
+        rebar_area=steel_area,
     )
 
 

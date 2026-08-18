@@ -573,8 +573,8 @@ def test_pile_body_limit_governs_the_uplift_and_is_the_safe_side():
     assert with_body.push_limit == pytest.approx(without.push_limit)
 
 
-def test_pile_body_limits_are_only_for_cast_in_place():
-    """場所打ち杭以外は式が確認できていないので拒むこと。"""
+def test_pile_body_limits_are_only_for_verified_pile_types():
+    """場所打ち杭・PHC杭以外は式が確認できていないので拒むこと。"""
     from core.analysis.level2 import pile_body_axial_limits
 
     steel = PileSpec(
@@ -584,7 +584,7 @@ def test_pile_body_limits_are_only_for_cast_in_place():
         length=25.0,
         wall_thickness=12.0,
     )
-    with pytest.raises(ValueError, match="場所打ち杭のみ"):
+    with pytest.raises(ValueError, match="場所打ち杭・PHC杭のみ"):
         pile_body_axial_limits(steel, REBAR, fck=24)
 
 
@@ -705,3 +705,58 @@ def test_skin_friction_intensity_is_a_user_input_in_the_worked_examples():
     assert skin_friction_intensity(
         ConstructionMethod.INNER_DIGGING, layer
     ) == pytest.approx(60.0)
+
+
+def test_phc_pile_body_axial_limits_match_kui2():
+    """PHC杭でも同じ式で、PC鋼材の降伏点を使うこと(Kui_2 の 7.5.4)。
+
+        Rpu = 0.85・σck・Ac + σy・As
+            σck = 80.00 ×10³ kN/m²、Ac = 0.238 m²(φ800・t=110)
+            σy  = 1275.00 ×10³ kN/m²(**PC鋼材**の降伏点)
+            As  = 25.120 ×10⁻⁴ m²(**PC鋼材量**)
+        → 19417 kN
+    """
+    from core.analysis.level2 import pile_body_axial_limits
+    from core.standards import PRESTRESSING_STEEL_YIELD_POINT
+
+    assert PRESTRESSING_STEEL_YIELD_POINT == 1275.0
+    phc = PileSpec(
+        pile_type=PileType.PHC,
+        method=ConstructionMethod.INNER_DIGGING,
+        diameter=0.8,
+        length=26.0,
+        concrete_thickness=110.0,
+    )
+    limits = pile_body_axial_limits(
+        phc, fck=80, prestressing_steel_area=25.120e-4
+    )
+    assert limits.concrete_area == pytest.approx(0.238, abs=0.001)
+    assert limits.push == pytest.approx(19417.0, abs=1.0)
+    # 7.5.5: Ppu = σy·As = 3203 kN
+    assert limits.pull == pytest.approx(3203.0, abs=1.0)
+
+
+def test_min_is_exercised_on_both_sides_across_the_two_samples():
+    """min(地盤, 杭体)の支配側が2つのサンプルで入れ替わること。
+
+    Kui_1(場所打ち杭): 引抜きは杭体が支配(地盤 5904 > 杭体 4195)
+    Kui_2(PHC杭 (1)杭): 引抜きは地盤が支配(地盤 1851 < 杭体 3203)
+    どちらか一方だけを見ていたら min の必要性に気づけなかった。
+    """
+    assert min(5904.0, 4195.0) == 4195.0   # Kui_1 → 杭体
+    assert min(1851.0, 3203.0) == 1851.0   # Kui_2 → 地盤
+
+
+def test_phc_pile_body_limits_need_the_prestressing_steel_area():
+    """PHC杭は PC鋼材量の入力を要求すること(モデルに持っていないため)。"""
+    from core.analysis.level2 import pile_body_axial_limits
+
+    phc = PileSpec(
+        pile_type=PileType.PHC,
+        method=ConstructionMethod.INNER_DIGGING,
+        diameter=0.8,
+        length=26.0,
+        concrete_thickness=110.0,
+    )
+    with pytest.raises(ValueError, match="PC鋼材量"):
+        pile_body_axial_limits(phc, fck=80)
