@@ -1090,3 +1090,46 @@ def test_virtual_rc_section_check_rejects_removed_rebar_grade():
             virtual_diameter=1.2, rebar=rebar, fck=24, rebar_grade="SD295",
             case=LoadCase.PERMANENT, axial=310.0, moment=0.0,
         )
+
+
+# --- Kui_6(PHC杭・プレボーリング杭)(第47回)-------------------------------
+
+
+def test_qd_matches_kui6_for_preboring_pile_with_explicit_formula():
+    """プレボーリング杭の qd=150N(≦7500)が計算例(5.4)と一致すること。
+
+    Kui_6 は「qd = 150・N(≦7500) 砂層」と**算定式つき**で qd=6750
+    (N=45)を示しており、`QD_SPECS["プレボーリング"]` 追加以来
+    初めて得られた確認(従来は中掘り杭と同値だろうという推定のみだった)。
+    """
+    from core.capacity.bearing import tip_resistance_intensity
+    from core.models import SoilLayer, SoilType
+    from core.standards import QD_SPECS
+
+    assert QD_SPECS["プレボーリング"]["砂質土"].coef == 150.0
+    assert QD_SPECS["プレボーリング"]["砂質土"].cap == 7500.0
+    layer = SoilLayer(
+        name="s", soil_type=SoilType.SAND, thickness=1.0, n_value=45.0,
+        gamma_t=18.0, gamma_sat=18.0,
+    )
+    qd = tip_resistance_intensity(ConstructionMethod.PREBORING, layer, n_tip=45.0)
+    assert qd == pytest.approx(6750.0)
+
+
+def test_skin_friction_f_remains_inconsistent_across_worked_examples():
+    """f(周面摩擦力度)は計算例間で工法が同じでも値が一致せず、依然として
+    利用者入力である(第35〜37回)という結論を補強する追加の反例。
+
+    Kui_2(中掘り杭、N=20の砂質土)は f=20.0(≒1N)を示す(第37回)のに対し、
+    Kui_6(プレボーリング杭、N=10の砂質土)は f=50.0(≒5N)を示す。
+    同じ「セメントミルク撹拌系」の工法でも計算例間で比率が5倍違うため、
+    どちらの数値も本ソフトの推定式の裏付けには使えない。
+    `F_SPECS["プレボーリング"]` は書き換えていない。
+    """
+    from core.standards import F_SPECS
+
+    # Kui_2: N=20 → f=20.0 → coef≒1.0(第37回)
+    # Kui_6: N=10 → f=50.0 → coef≒5.0(今回)
+    # 本ソフトの実装(coef=3.0)はそのどちらとも一致しない。
+    # 一致しないことそのものが「f は利用者入力」という結論を補強する。
+    assert F_SPECS["プレボーリング"]["砂質土"] == (3.0, "N")
