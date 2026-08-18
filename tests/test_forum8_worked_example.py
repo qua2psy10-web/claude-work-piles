@@ -280,3 +280,167 @@ def test_underground_maximum_moment_comes_from_the_hinged_head_case():
     moments = -EI * (y[2:] - 2.0 * y[1:-1] + y[:-2]) / le**2
     assert abs(moments[0]) < 20.0  # 杭頭はほぼモーメントフリー
     assert abs(moments).max() == pytest.approx(409.04, rel=5e-3)
+
+
+# --- 5章・7章(第35回に追加された章)--------------------------------------
+
+# 1.5 地層データの最大周面摩擦力度 f (kN/m²)
+EXPECTED_F = [0.0, 38.0, 100.0, 200.0]
+
+
+def _bearing_profile():
+    """計算例と同じ f になる地盤モデル。
+
+    粘性土は c を与えるとその値が f になる。計算例の 38.0 は 10N
+    (= 10 × 3.8)だが、本ソフトは N < 5 の粘性土で N 値推定を拒むため、
+    ここでは c = 38 として同じ f を与える(:func:`test_soft_clay_needs_cohesion`)。
+    """
+    from core.models import SoilLayer, SoilProfile, SoilType
+
+    return SoilProfile(
+        layers=[
+            SoilLayer(
+                name="1", soil_type=SoilType.CLAY, thickness=5.0, n_value=2.0,
+                gamma_t=16.0, gamma_sat=16.0, cohesion=0.0,
+            ),
+            SoilLayer(
+                name="2", soil_type=SoilType.CLAY, thickness=12.0, n_value=3.8,
+                gamma_t=16.0, gamma_sat=16.0, cohesion=38.0,
+            ),
+            SoilLayer(
+                name="3", soil_type=SoilType.SAND, thickness=6.0, n_value=20.0,
+                gamma_t=18.0, gamma_sat=18.0,
+            ),
+            SoilLayer(
+                name="4", soil_type=SoilType.SAND, thickness=2.0, n_value=50.0,
+                gamma_t=20.0, gamma_sat=20.0,
+            ),
+        ],
+        gwl=0.0,
+    )
+
+
+def test_sand_skin_friction_matches():
+    """場所打ち杭の砂質土の f = 5N(上限 200)が一致すること。"""
+    from core.capacity.bearing import skin_friction_intensity
+    from core.models import SoilLayer, SoilType
+
+    for n_value, expected in ((20.0, 100.0), (50.0, 200.0)):
+        layer = SoilLayer(
+            name="s", soil_type=SoilType.SAND, thickness=1.0, n_value=n_value,
+            gamma_t=18.0, gamma_sat=18.0,
+        )
+        got = skin_friction_intensity(ConstructionMethod.CAST_IN_PLACE, layer)
+        assert got == pytest.approx(expected)
+
+
+def test_soft_clay_needs_cohesion():
+    """N < 5 の粘性土では c を要求すること(計算例は 10N を使っている)。
+
+    計算例は N = 3.8 に対して f = 38.0 = 10N をそのまま適用している。
+    本ソフトは道示の注記に従い、この範囲では N 値による推定を行わず
+    エラーとする。**推定しない側**の判断なので追随しない。
+    """
+    from core.capacity.bearing import skin_friction_intensity
+    from core.models import SoilLayer, SoilType
+
+    layer = SoilLayer(
+        name="c", soil_type=SoilType.CLAY, thickness=1.0, n_value=3.8,
+        gamma_t=16.0, gamma_sat=16.0,
+    )
+    with pytest.raises(ValueError, match="軟弱粘性土"):
+        skin_friction_intensity(ConstructionMethod.CAST_IN_PLACE, layer)
+
+
+def test_ultimate_bearing_capacity_matches_without_the_tip_zone_exclusion():
+    """極限支持力 Ru が計算例の設計極限押込力 8882.00 kN と一致すること。
+
+    **ただし先端 1D 区間の周面摩擦を除外しない場合**である。本ソフトは
+    既定で除外しており(道示Ⅳ 12.4.1 の規定として実装)、その場合は
+    7977 kN と 10.2% 小さくなる。計算例は除外していない。
+
+    除外するほうが支持力を小さく見るので**本ソフトが安全側**である。
+    どちらが H24 の規定かは原典未照合(docs/VERIFICATION.md 第35回)。
+    """
+    from core.capacity.bearing import compute_bearing_capacity
+
+    profile = _bearing_profile()
+    without = compute_bearing_capacity(
+        PILE, profile, 0.0, exclude_tip_zone=False
+    )
+    assert without.ru == pytest.approx(8882.00, abs=0.2)
+    assert without.tip_resistance == pytest.approx(3392.92, abs=0.1)
+    assert without.skin_resistance == pytest.approx(5488.99, abs=0.1)
+
+    with_exclusion = compute_bearing_capacity(
+        PILE, profile, 0.0, exclude_tip_zone=True
+    )
+    assert with_exclusion.ru == pytest.approx(7977.13, abs=0.2)
+    assert with_exclusion.ru < without.ru  # 除外するほうが安全側
+
+
+def test_group_pile_pressure_coefficients_match():
+    """水平地盤反力度の上限値の補正係数が計算例と一致すること。
+
+    計算例 7.1 の「単杭および群杭に関する補正係数」:
+        単杭 αp — 砂質土 3.000、粘性土 1.500(2<N)/ 1.000(N≦2)
+        群杭 ηp·αp — 砂質土 2.500、粘性土 ηp = 1.000
+    砂質土の 2.500 は ηp·αp = min(s/D, αp) = min(3.0/1.2, 3.0) から出る。
+    """
+    from core.capacity.lateral_limit import alpha_p, eta_p_alpha_p
+    from core.models import SoilLayer, SoilType
+
+    def layer(soil_type, n_value):
+        return SoilLayer(
+            name="x", soil_type=soil_type, thickness=1.0, n_value=n_value,
+            gamma_t=18.0, gamma_sat=18.0, k_ep=3.0,
+        )
+
+    assert alpha_p(layer(SoilType.SAND, 20.0)) == pytest.approx(3.000)
+    assert alpha_p(layer(SoilType.CLAY, 3.8)) == pytest.approx(1.500)
+    assert alpha_p(layer(SoilType.CLAY, 2.0)) == pytest.approx(1.000)
+
+    spacing, diameter = 3.0, 1.2
+    assert eta_p_alpha_p(
+        layer(SoilType.SAND, 20.0), diameter, spacing
+    ) == pytest.approx(2.500)
+    # 粘性土は ηp = 1.0 なので αp がそのまま出る
+    assert eta_p_alpha_p(
+        layer(SoilType.CLAY, 3.8), diameter, spacing
+    ) == pytest.approx(1.500)
+    assert eta_p_alpha_p(
+        layer(SoilType.CLAY, 2.0), diameter, spacing
+    ) == pytest.approx(1.000)
+
+
+def test_level2_kh_equals_the_seismic_kh_because_the_corrections_cancel():
+    """レベル2の kHE が地震時の kH に等しいこと。
+
+    計算例 7.1 は 単杭 αk = 1.500、群杭 ηk = 0.66667 を掲げ、
+    7.1 の地盤反力係数 kHE(6932.334 / 13171.434 / 69323.339 / 173308.351)は
+    1.6 の**地震時 kH と同じ値**である。αk · ηk = 1.5 × 2/3 = 1.0 で
+    相殺するためで、本ソフトが kH(α = 2)をそのままレベル2に使うのと
+    数値的に一致する。
+
+    .. note::
+       相殺するのは**群杭**の場合である。単杭なら αk のみが効いて
+       1.5 倍になるはずだが、本ソフトは群杭のみを扱うため影響しない。
+    """
+    alpha_k, eta_k = 1.5, 2.0 / 3.0
+    assert alpha_k * eta_k == pytest.approx(1.0)
+    expected_khe = [6932.334, 13171.434, 69323.339, 173308.351]
+    for (_, _, alpha_e0_eq), khe in zip(LAYERS, expected_khe):
+        assert kh_from_e0(alpha_e0_eq, _BH, 1.0) * alpha_k * eta_k == pytest.approx(
+            khe, rel=2e-4
+        )
+
+
+def test_rebar_nominal_area_confirmed_again_by_the_anchorage_calculation():
+    """杭頭補強鉄筋の定着長からも D25 = 506.7 mm² が確認できること。
+
+    計算例 6.4: σsa = 200.00、τoa = 1.600、Ast = 506.7、u = 80、
+    Lo = 792 mm。Lo = σsa·Ast /(τoa·u)= 200×506.7 /(1.6×80)= 791.7。
+    """
+    assert REBAR.bar_area * 1.0e6 == pytest.approx(506.7)
+    lo = 200.0 * 506.7 / (1.6 * 80.0)
+    assert lo == pytest.approx(792.0, abs=0.5)
