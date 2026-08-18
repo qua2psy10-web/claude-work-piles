@@ -548,13 +548,11 @@ def test_pile_body_axial_limits_match_7_6_4():
 
 
 def test_pile_body_limit_governs_the_uplift_and_is_the_safe_side():
-    """引抜きは杭体から決まる上限値が支配し、入れないと 4 割超の過大評価になる。
+    """引抜きは杭体から決まる上限値が支配し、入れないと 1.41 倍の過大評価になる。
 
-    倍率は杭の重量 W の扱いで少し変わる。計算例は「浮力無視」のケースなので
-    **乾燥重量** w = 27.71 kN/m(= 24.5 × Ac)を使い、W = 692.75 kN で
-    Ruf + W = 6181.8 → 1.47 倍。本ソフトは地下水位から**浮力を控除した**
-    W = 415.0 kN(= 16.6 kN/m × 25)を使うので 5904.0 → 1.41 倍になる。
-    浮力を引くほうが W が小さく、引抜きに対しては**安全側**である。
+    7.6.5 は地盤から決まる極限引抜き力を Pu + W = U·Σ(Li·fi) + W とし、
+    W を**有効重量**(水中部 16.61 kN/m × 25 m = 415.4 kN)としている。
+    本ソフトも浮力を控除した W = 415.0 kN を使うので同じ 5904 kN になる。
     """
     from core.analysis.level2 import AxialSpringModel, pile_body_axial_limits
     from core.capacity.bearing import compute_bearing_capacity
@@ -568,9 +566,8 @@ def test_pile_body_limit_governs_the_uplift_and_is_the_safe_side():
     with_body = AxialSpringModel.from_bearing(KV, bearing, body=body)
 
     assert with_body.pull_limit == pytest.approx(4195.0, abs=1.0)
+    assert without.pull_limit == pytest.approx(5904.0, abs=1.0)  # 計算例 5904
     assert without.pull_limit / with_body.pull_limit == pytest.approx(1.41, abs=0.01)
-    # 計算例の乾燥重量を使うと 1.47 倍。いずれにせよ 4 割超の過大評価
-    assert (5489.0 + 692.75) / 4195.5 == pytest.approx(1.47, abs=0.01)
     assert with_body.pull_limit < without.pull_limit  # 入れるほうが安全側
     # 押込みは地盤側が支配する(杭体 27267 ≫ 地盤 8189)
     assert with_body.push_limit == pytest.approx(without.push_limit)
@@ -589,3 +586,30 @@ def test_pile_body_limits_are_only_for_cast_in_place():
     )
     with pytest.raises(ValueError, match="場所打ち杭のみ"):
         pile_body_axial_limits(steel, REBAR, fck=24)
+
+
+def test_uplift_limit_formula_matches_7_6_5():
+    """7.6.5 の式・値がそのまま一致すること。
+
+        1) 地盤から決まる  Pu + W = U·Σ(Li·fi) + W = 5489.0 + 415.4 = 5904
+           W は**有効重量**(水中部単位長重量 16.61 kN/m × 25.000 m)
+        2) 杭体から決まる  Ppu = σy·As = 4195
+        3) PTu = min(Pu + W, Ppu) = 4195
+
+    第36回に σy·As = 4195.5 から推定した内容が、本文で確認できた。
+    """
+    from core.analysis.level2 import pile_body_axial_limits
+    from core.capacity.bearing import compute_bearing_capacity
+
+    bearing = compute_bearing_capacity(
+        PILE, _bearing_profile(), 0.0, exclude_tip_zone=False
+    )
+    assert bearing.skin_resistance == pytest.approx(5489.0, abs=0.1)
+    # 有効重量(浮力控除後)。計算例 415.4 kN
+    assert bearing.w_pile == pytest.approx(415.4, abs=0.5)
+    ground = bearing.skin_resistance + bearing.w_pile
+    assert ground == pytest.approx(5904.0, abs=1.0)
+
+    body = pile_body_axial_limits(PILE, REBAR, fck=24, rebar_grade="SD345")
+    assert body.pull == pytest.approx(4195.0, abs=1.0)
+    assert min(ground, body.pull) == pytest.approx(4195.0, abs=1.0)
