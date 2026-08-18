@@ -760,3 +760,84 @@ def test_phc_pile_body_limits_need_the_prestressing_steel_area():
     )
     with pytest.raises(ValueError, match="PC鋼材量"):
         pile_body_axial_limits(phc, fck=80)
+
+
+# --- Kui_3(鋼管ソイルセメント杭・液状化考慮)(第39回)------------------------
+#
+# 別サンプル Kui_3 は鋼管ソイルセメント杭 φ1000(固化体径)/鋼管径800mm、
+# 継杭(上杭 t=19.0mm/中杭 t=14.0mm/下杭 t=11.0mm、いずれも SKK490)、
+# 液状化考慮(地震時(液有))のケースを含む。
+
+
+def test_bilinear_m_phi_matches_the_worked_example_for_each_segment():
+    """全塑性モーメント Mp・降伏モーメント My が3区間すべて一致すること。
+
+    軸力 N = 959.9 kN(死荷重時軸力、浮力無視)に対し、上杭・中杭・下杭で
+    板厚が異なる(19.0 / 14.0 / 11.0 mm)。鋼管ソイルセメント杭は鋼管部で
+    照査するので、鋼管杭と同じ式(:func:`plastic_moment_steel_pipe` /
+    :func:`yield_moment_steel_pipe`)がそのまま使える。
+    """
+    from core.analysis.level2 import plastic_moment_steel_pipe, yield_moment_steel_pipe
+    from core.capacity.section import pile_section
+
+    axial = 959.9
+    segments = [
+        (19.0, 3429.9, 2466.6),  # 上杭
+        (14.0, 2495.6, 1764.8),  # 中杭
+        (11.0, 1919.6, 1330.4),  # 下杭
+    ]
+    for thickness, expected_mp, expected_my in segments:
+        pile = PileSpec(
+            pile_type=PileType.STEEL_PIPE_SOIL_CEMENT,
+            method=ConstructionMethod.STEEL_PIPE_SOIL_CEMENT,
+            diameter=0.8, length=10.0, wall_thickness=thickness,
+            soil_cement_diameter=1.0,
+        )
+        section = pile_section(pile)
+        mp = plastic_moment_steel_pipe(
+            pile, axial, steel_grade="SKK490", corrosion_mm=1.0
+        )
+        my = yield_moment_steel_pipe(
+            pile, section, axial, steel_grade="SKK490", corrosion_mm=1.0
+        )
+        assert mp == pytest.approx(expected_mp, rel=3e-4), thickness
+        assert my == pytest.approx(expected_my, rel=3e-4), thickness
+
+
+def test_allowable_capacity_with_liquefaction_matches():
+    """液状化考慮(地震時(液有))を含む許容支持力・引抜力が一致すること。
+
+    地盤から決まる極限支持力・極限引抜力は、DE を周面摩擦力度に乗じた
+    Σ(Li・fi・DEi) から求まる(常時/地震時(液無)と地震時(液有)で
+    Σ(Li・fi) が変わる)。安全率は Kui_2 で確認したものと同じ
+    (押込み 3.0/2.0、引抜き 6.0/3.0)。6項目すべて計算例と一致する。
+    """
+    from core.capacity.bearing import BearingCapacity
+    from core.models import LoadCase
+
+    qd_ap = 7500.0 * 0.785
+    skin_normal = 3.142 * 3410.0   # 常時・地震時(液無)
+    skin_liq = 3.142 * 2993.7      # 地震時(液有)
+    ws = 203.5
+    w = 278.1
+
+    normal = BearingCapacity(
+        qd=7500.0, tip_area=0.785, tip_resistance=qd_ap,
+        ru=qd_ap + skin_normal, w_soil=ws, w_pile=w,
+        skin_resistance=skin_normal,
+    )
+    liquefied = BearingCapacity(
+        qd=7500.0, tip_area=0.785, tip_resistance=qd_ap,
+        ru=qd_ap + skin_liq, w_soil=ws, w_pile=w,
+        skin_resistance=skin_liq,
+    )
+    assert normal.ru == pytest.approx(16603, abs=2)
+    assert liquefied.ru == pytest.approx(15296, abs=3)
+
+    assert normal.allowable_push(LoadCase.PERMANENT) == pytest.approx(5392, abs=1)
+    assert normal.allowable_push(LoadCase.LEVEL1_EQ) == pytest.approx(8125, abs=1)
+    assert liquefied.allowable_push(LoadCase.LEVEL1_EQ) == pytest.approx(7471, abs=1)
+
+    assert normal.allowable_pull(LoadCase.PERMANENT) == pytest.approx(2064, abs=1)
+    assert normal.allowable_pull(LoadCase.LEVEL1_EQ) == pytest.approx(3849, abs=1)
+    assert liquefied.allowable_pull(LoadCase.LEVEL1_EQ) == pytest.approx(3413, abs=1)
