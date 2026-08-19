@@ -603,6 +603,27 @@ def test_negative_friction_intensity_sand_uses_effective_stress():
     assert negative_friction_intensity(sand, 100.0) == pytest.approx(30.0)
 
 
+def test_negative_friction_intensity_clay_matches_kui12_10n_formula():
+    """粘着力が未入力の粘性土は fn = 10・N で推定する(道示Ⅳ 12.4.3)。
+
+    フォーラムエイト UC-1 計算書サンプル Kui_12 の 2.4「負の周面摩擦力に
+    対する検討」(第57回)で、粘着力未入力の粘性土2層(N=2.0→fn=20.0、
+    N=3.8→fn=38.0)がいずれも fn=10・N と厳密に一致することを確認した。
+    従来は二次資料のみに基づく確度Cだったが、この一致により確度Bに
+    格上げできる。
+    """
+    layer1 = SoilLayer(
+        name="clay1", soil_type=SoilType.CLAY, thickness=5.0,
+        n_value=2.0, gamma_t=16.0, gamma_sat=16.0,
+    )
+    layer2 = SoilLayer(
+        name="clay2", soil_type=SoilType.CLAY, thickness=12.0,
+        n_value=3.8, gamma_t=16.0, gamma_sat=16.0,
+    )
+    assert negative_friction_intensity(layer1, 0.0) == pytest.approx(20.0)
+    assert negative_friction_intensity(layer2, 0.0) == pytest.approx(38.0)
+
+
 def test_negative_friction_neutral_point_at_soft_layer_bottom():
     result = compute_negative_friction(
         CIP, nf_profile(), embedment=1.0, dead_load=1000.0, ru=9000.0

@@ -63,6 +63,13 @@ def negative_friction_intensity(layer: SoilLayer, sigma_v_eff: float) -> float:
 
     粘性土: fn = c(粘着力。未入力時は c = 10N で推定)
     砂質土: fn = 0.3・σ'v(有効上載圧に比例)
+
+    .. note::
+       粘性土の c=10N 推定式は、フォーラムエイト UC-1 計算書サンプル
+       Kui_12 の 2.4「負の周面摩擦力に対する検討」(第57回)で、粘着力
+       未入力の粘性土2層(N=2.0→fn=20.0、N=3.8→fn=38.0)がいずれも
+       fn=10・N と厳密に一致することを確認した。従来は二次資料のみに
+       基づく確度Cだったが、この一致により確度Bに格上げした。
     """
     if layer.soil_type == SoilType.CLAY:
         return layer.cohesion if layer.cohesion is not None else 10.0 * layer.n_value
