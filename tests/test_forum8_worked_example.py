@@ -574,19 +574,19 @@ def test_pile_body_limit_governs_the_uplift_and_is_the_safe_side():
 
 
 def test_pile_body_limits_are_only_for_verified_pile_types():
-    """場所打ち杭・PHC杭・鋼管杭・鋼管ソイルセメント杭以外は式が確認できて
-    いないので拒むこと。"""
+    """RC杭・H鋼杭は式が確認できていないので拒むこと(第56回、SC杭は
+    Kui_11で確認できたため対応済みに移った)。"""
     from core.analysis.level2 import pile_body_axial_limits
 
-    sc_pile = PileSpec(
-        pile_type=PileType.SC,
+    rc_pile = PileSpec(
+        pile_type=PileType.RC,
         method=ConstructionMethod.DRIVEN,
         diameter=1.2,
         length=25.0,
-        wall_thickness=12.0,
+        concrete_thickness=100.0,
     )
-    with pytest.raises(ValueError, match="場所打ち杭・PHC杭・鋼管杭・鋼管ソイルセメント杭のみ"):
-        pile_body_axial_limits(sc_pile, REBAR, fck=24)
+    with pytest.raises(ValueError, match="式が確認できていません"):
+        pile_body_axial_limits(rc_pile, REBAR, fck=24)
 
 
 def test_uplift_limit_formula_matches_7_6_5():
@@ -1351,3 +1351,35 @@ def test_phc_stress_check_matches_kui10_confirming_sigma_ce_term():
         reduced = sigma_ce + axial / ae / 1000.0 - abs(moment) / ze / 1000.0
         assert reduced == pytest.approx(target_reduced, abs=0.02)
         assert "曲げ引張応力度" not in by_name
+
+
+def test_sc_pile_body_axial_limits_match_kui11_7_7_4_and_7_7_5():
+    """SC杭の杭体から決まる支持力の上限値(Kui_11の7.7.4/7.7.5、第56回)。
+
+    従来SC杭は「式が確認できていない」として拒んでいたが、Kui_11
+    (SC杭φ700、上杭SKK490(t=14mm)、σck=80、腐食代1mm)の計算例に
+
+        Rpu = 0.85・σck・Ac + σy・As = 19578 (kN)
+        Ppu = σy・As = 8812 (kN)
+
+    と明記されており、場所打ち杭・PHC杭と同型の式(コンクリートの負担項
+    Ac を持つ)であることが分かった。鋼管ソイルセメント杭(Ac=0、押込み・
+    引抜きが同一の式)とは異なる。Ac・Asは応力度照査と同じ幾何(腐食は
+    外面から控除、鋼管の内径=コンクリートの外径)で算定する。
+    """
+    from core.analysis.level2 import pile_body_axial_limits
+
+    sc = PileSpec(
+        pile_type=PileType.SC,
+        method=ConstructionMethod.PREBORING,
+        diameter=0.7,
+        length=30.9,
+        wall_thickness=14.0,
+        concrete_thickness=86.0,
+    )
+    limits = pile_body_axial_limits(
+        sc, fck=80, steel_grade="SKK490", corrosion_mm=1.0
+    )
+    assert limits.push == pytest.approx(19578.0, abs=1.0)
+    assert limits.pull == pytest.approx(8812.0, abs=1.0)
+    assert limits.rebar_area == pytest.approx(0.027976, abs=1.0e-6)

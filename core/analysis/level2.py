@@ -123,11 +123,11 @@ LIMITATIONS: tuple[str, ...] = (
     "押込み支持力の上限値 Pu・引抜き抵抗力の上限値 Pt は、**地盤から決まる値**"
     "(許容応力度設計法の式で安全率を 1 とした値)と、**杭体から決まる値**"
     "(Rpu = 0.85σck・Ac + σy・As、Ptu = σy・As)の小さいほうとしている。"
-    "杭体側は**場所打ち杭**(軸方向鉄筋を入力した場合)、**PHC杭**"
-    "(PC鋼材量を入力した場合)、**鋼管杭・鋼管ソイルセメント杭**"
+    "杭体側は**場所打ち杭**(軸方向鉄筋を入力した場合)、**PHC杭・SC杭**"
+    "(コンクリートの負担項を持つ)、**鋼管杭・鋼管ソイルセメント杭**"
     "(Rpu = Ptu = σy・As。固化体・コンクリートの負担は見込まない)を算定する。"
     "他社製品の計算書サンプルとは一致するが**道示の原典は未照合**である。"
-    "算定しない杭種(SC杭・RC杭・H鋼杭)では地盤から決まる値のみとなり、"
+    "算定しない杭種(RC杭・H鋼杭)では地盤から決まる値のみとなり、"
     "**引抜き側を過大評価しうる**。"
     "押込み側は、計算例が杭の重量 W を控除していないのに対し本ソフトは"
     "控除している(本ソフトのほうが小さく安全側)。",
@@ -172,6 +172,7 @@ def pile_body_axial_limits(
     prestressing_steel_yield: float = PRESTRESSING_STEEL_YIELD_POINT,
     section: "PileSection | None" = None,
     steel_grade: str = "SKK400",
+    corrosion_mm: float = CORROSION_ALLOWANCE_MM,
 ) -> PileBodyAxialLimits:
     """杭体から決まる軸方向支持力の上限値。
 
@@ -186,6 +187,7 @@ def pile_body_axial_limits(
     ============ ==================== ==============================
     場所打ち杭   中実円 πD²/4         軸方向鉄筋 × 鉄筋の降伏点
     PHC杭        中空円環             PC鋼材量 × PC鋼材の降伏点
+    SC杭         中空円環(鋼管内側)   鋼管の純断面積 × 鋼管の降伏点
     鋼管杭       0(見込まない)        鋼管の純断面積 × 鋼管の降伏点
     鋼管ソイル   0(固化体は見込まない) 鋼管の純断面積 × 鋼管の降伏点
     セメント杭
@@ -194,7 +196,9 @@ def pile_body_axial_limits(
     PHC杭では ``prestressing_steel_area`` (m²) の入力が必要である
     (本ソフトは PC鋼材量をモデルに持たないため)。鋼管杭・鋼管ソイル
     セメント杭では ``section``(:func:`core.capacity.section.pile_section`
-    の戻り値。腐食代控除後の純断面積を持つ)の入力が必要である。
+    の戻り値。腐食代控除後の純断面積を持つ)の入力が必要である。SC杭は
+    ``wall_thickness``・``concrete_thickness`` から自動算定する(応力度
+    照査 :func:`core.section.checks._check_sc` と同じ幾何)。
 
     .. note::
        出典は他社製品の計算書サンプルであり**道示の原典は未照合**である。
@@ -208,10 +212,15 @@ def pile_body_axial_limits(
        7.7.4/7.7.5)。**押込み側にも固化体・コンクリートの項が無く**、
        押込み・引抜きが同一の式になる点が場所打ち杭・PHC杭と異なる。
 
+       SC杭 φ700・上杭SKK490(t=14mm)・σck=80・腐食代1mm → Kui_11 の
+       7.7.4/7.7.5(第56回)に Rpu = 0.85・σck・Ac + σy・As = 19578kN、
+       Ppu = σy・As = 8812kN と明記されており、**場所打ち杭・PHC杭と
+       同型の式**(コンクリートの負担項を持つ)であることを確認した。
+       鋼管ソイルセメント杭(コンクリート項なし)とは異なる扱いになる。
+
     .. important::
-       **場所打ち杭・PHC杭・鋼管杭・鋼管ソイルセメント杭のみ**。SC杭・
-       RC杭・H鋼杭の式は確認できていないので、当てずっぽうを避けて
-       対象外としている。
+       **RC杭・H鋼杭のみ未対応**。式が確認できていないため、当てずっぽう
+       を避けて対象外としている。
     """
     sigma_ck = fck * 1000.0  # N/mm2 → kN/m2
     if pile.pile_type == PileType.CAST_IN_PLACE:
@@ -261,10 +270,34 @@ def pile_body_axial_limits(
         concrete_area = 0.0
         steel_area = section.area
         sigma_y = SIGMA_Y_STEEL[steel_grade] * 1000.0
+    elif pile.pile_type == PileType.SC:
+        if pile.wall_thickness is None:
+            raise ValueError("SC杭は鋼管の板厚 wall_thickness の入力が必要です")
+        if pile.concrete_thickness is None:
+            raise ValueError(
+                "SC杭はコンクリート部の肉厚 concrete_thickness (mm) の"
+                "入力が必要です"
+            )
+        if steel_grade not in SIGMA_Y_STEEL:
+            raise ValueError(
+                f"鋼材種別 {steel_grade} の降伏点が未定義です。"
+                f"対応材質: {sorted(SIGMA_Y_STEEL)}"
+            )
+        # 応力度照査(core.section.checks._check_sc)と同じ幾何: 腐食は外面
+        # から控除、鋼管の内径 = コンクリートの外径。
+        steel_outer, t_steel = corroded_tube(
+            pile.diameter, pile.wall_thickness, corrosion_mm
+        )
+        concrete_outer = steel_outer - 2.0 * t_steel
+        concrete_area, _ = hollow_circle(
+            concrete_outer, pile.concrete_thickness / 1000.0
+        )
+        steel_area, _ = hollow_circle(steel_outer, t_steel)
+        sigma_y = SIGMA_Y_STEEL[steel_grade] * 1000.0
     else:
         raise ValueError(
             f"{pile.pile_type.value}の杭体から決まる支持力の上限値は未実装です"
-            "(場所打ち杭・PHC杭・鋼管杭・鋼管ソイルセメント杭のみ。"
+            "(場所打ち杭・PHC杭・鋼管杭・鋼管ソイルセメント杭・SC杭のみ。"
             "式が確認できていません)"
         )
     steel = sigma_y * steel_area
@@ -1284,6 +1317,14 @@ def run_level2(
     elif pile.pile_type in (PileType.STEEL_PIPE, PileType.STEEL_PIPE_SOIL_CEMENT):
         body_limits = pile_body_axial_limits(
             pile, section=section, steel_grade=steel_grade
+        )
+    elif (
+        pile.pile_type == PileType.SC
+        and pile.wall_thickness is not None
+        and pile.concrete_thickness is not None
+    ):
+        body_limits = pile_body_axial_limits(
+            pile, fck=fck, steel_grade=steel_grade, corrosion_mm=corrosion_mm
         )
     axial = AxialSpringModel.from_bearing(kv, bearing, body=body_limits)
     has_k_ep = all(layer.k_ep is not None for layer in profile.layers)

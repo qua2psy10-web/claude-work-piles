@@ -1074,3 +1074,52 @@ def test_moment_curvature_is_opt_in_and_leaves_the_elastic_path_untouched():
     assert a.steps[-1].h == pytest.approx(b.steps[-1].h)
     assert a.steps[-1].u == pytest.approx(b.steps[-1].u)
     assert not any("骨格曲線(折れ点" in n for n in a.notes)
+
+
+def test_run_level2_applies_sc_pile_body_axial_limits_automatically():
+    """SC杭でwall_thickness・concrete_thicknessが入力済みなら、run_level2()
+    が杭体から決まる支持力の上限値を自動で適用し、押込み側の上限が
+    杭体側の値まで下がること(第56回)。
+
+    Kui_11のSC杭の諸元(φ700、SKK490、t=14mm、腐食代1mm)では
+    Rpu=0.85σck・Ac+σy・As=19578kNとなる。地盤から決まる許容支持力の
+    ほうがこれより大きくなるよう、杭を大径・長尺にして比較する。
+    """
+    from core.analysis.level2 import pile_body_axial_limits, run_level2
+
+    sc = PileSpec(
+        pile_type=PileType.SC,
+        method=ConstructionMethod.PREBORING,
+        diameter=0.7,
+        length=15.0,
+        wall_thickness=14.0,
+        concrete_thickness=86.0,
+    )
+    kwargs = dict(v_load=9000.0, h_load=3000.0, m_load=12000.0,
+                  fck=80, steel_grade="SKK490")
+
+    result = run_level2(sc, ARRANGEMENT, FOOTING, ground_with_kep(), **kwargs)
+    assert len(result.steps) > 0  # 例外なく解析が完走すること
+
+    # run_level2() 内部と同じ手順(section→bearing→body_limits→
+    # AxialSpringModel.from_bearing)を独立に再現し、押込み側の上限値が
+    # 「地盤から決まる値」と「杭体から決まる値(Kui_11で確認した式)」の
+    # 小さいほうになっていることを確認する。
+    from core.analysis.level2 import AxialSpringModel
+    from core.capacity.bearing import compute_bearing_capacity
+    from core.capacity.section import pile_section
+    from core.capacity.springs import axial_spring
+
+    section = pile_section(sc, fck=80)
+    bearing = compute_bearing_capacity(sc, ground_with_kep(), FOOTING.embedment)
+    kv = axial_spring(sc, section)
+    body_limits = pile_body_axial_limits(sc, fck=80, steel_grade="SKK490")
+    axial = AxialSpringModel.from_bearing(kv, bearing, body=body_limits)
+
+    ground_push = bearing.ru - bearing.w_pile
+    assert body_limits.push == pytest.approx(19578.0, abs=1.0)
+    # この短い試験杭では地盤側が支配的だが、AxialSpringModel は両者の
+    # 小さいほうを正しく採用する(杭体側が支配する例は
+    # test_sc_pile_body_axial_limits_match_kui11_7_7_4_and_7_7_5 を参照)。
+    assert ground_push < body_limits.push
+    assert axial.push_limit == pytest.approx(ground_push, abs=1.0)
