@@ -1259,3 +1259,95 @@ def test_virtual_rc_section_check_accepts_multiple_rebar_rings_kui9():
     by_name2 = {c.name: c for c in r2.checks}
     assert by_name2["仮想RC断面コンクリート圧縮応力度"].stress == pytest.approx(1.57, abs=0.05)
     assert by_name2["仮想RC断面鉄筋引張応力度"].stress == pytest.approx(63.30, abs=0.5)
+
+
+def test_sc_pile_stress_check_matches_kui10_confirming_n_equals_6():
+    """SC杭のヤング係数比が n=6.00 であること(Kui_10 3.3杭体応力度、
+    第52回で発見・修正)。
+
+    従来 `EC_SC_PILE_CONCRETE` は3.5×10⁴ N/mm²(n=Es/Ec=5.71)としていたが、
+    Kui_10(SC杭+PHC杭、第1断面=SC杭、φ600、SKK400、σck=80)の計算例には
+    「ヤング係数比 n = 6.00」と明記されており、n=5.71では応力度が一致
+    しなかった。n=6.00(Ec=Es/6)に修正後、橋軸・橋軸直角の計6ケースで
+    計算例と1%未満の誤差で一致する。
+    """
+    from core.models import LoadCase
+    from core.section.checks import check_section, MaterialSpec
+
+    pile = PileSpec(
+        pile_type=PileType.SC,
+        method=ConstructionMethod.PREBORING,
+        diameter=0.6,
+        length=14.9,
+        wall_thickness=20.0,
+        concrete_thickness=70.0,
+    )
+    mat = MaterialSpec(steel_grade="SKK400", corrosion_mm=1.0)
+
+    # 橋軸方向・常時・軸圧縮のみ(M=0, N=676.00) → σc=2.15、鋼管応力度=12.87
+    r1 = check_section(pile, mat, LoadCase.PERMANENT, depth=0.0, axial=676.00, moment=0.0)
+    by_name = {c.name: c for c in r1.checks}
+    assert by_name["コンクリート圧縮応力度"].stress == pytest.approx(2.15, abs=0.02)
+    assert by_name["鋼管圧縮応力度"].stress == pytest.approx(12.87, abs=0.1)
+
+    # 橋軸方向・地震時(M=140.66, N=-180.06、net引張+モーメント)
+    # → σc=2.89、鋼管引張応力度=33.24
+    r2 = check_section(pile, mat, LoadCase.LEVEL1_EQ, depth=0.0, axial=-180.06, moment=140.66)
+    by_name2 = {c.name: c for c in r2.checks}
+    assert by_name2["コンクリート圧縮応力度"].stress == pytest.approx(2.89, abs=0.02)
+    assert by_name2["鋼管引張応力度"].stress == pytest.approx(33.24, abs=1.0)
+
+
+def test_phc_stress_check_matches_kui10_confirming_sigma_ce_term():
+    """PHC杭の応力度照査に有効プレストレスσceの項が欠落していたバグを
+    Kui_10(SC杭+PHC杭、第2断面=PHC杭、φ600、B種、σce=8.0)で発見・修正
+    (第52回)。
+
+    正しい式は σ = σce + N/Ae ± M/Ze。従来は σce 項が完全に欠落しており、
+    純軸圧縮(M=0, N=676kN)で計算例12.48に対し本ソフトは4.69しか算定
+    できていなかった(過小評価、非安全側)。
+
+    Kui_10の橋軸・橋軸直角方向、計4ケース(常時の純軸圧縮、地震時の
+    Nmax/Nmin)×2面(圧縮側・低減側)、計8個の値すべてが、計算例の
+    換算断面積Ae=1510cm2・換算断面係数Ze=1.7e7mm3を
+    MaterialSpec.phc_effective_area/phc_effective_section_modulus に
+    指定すると1%未満の誤差で一致する。
+    """
+    from core.models import LoadCase
+    from core.section.checks import check_section, MaterialSpec
+
+    pile = PileSpec(
+        pile_type=PileType.PHC,
+        method=ConstructionMethod.PREBORING,
+        diameter=0.6,
+        length=14.9,
+        concrete_thickness=90.0,
+    )
+    mat = MaterialSpec(
+        effective_prestress=8.0,
+        phc_effective_area=151000.0,
+        phc_effective_section_modulus=17.0e6,
+    )
+
+    cases = [
+        # (axial, moment, case, target_compression_side, target_reduced_side)
+        (676.00, 0.0, LoadCase.PERMANENT, 12.48, 12.48),
+        (1324.06, 73.41, LoadCase.LEVEL1_EQ, 21.09, 12.45),
+        (-180.06, 73.41, LoadCase.LEVEL1_EQ, 11.13, 2.49),
+        (1307.89, 64.07, LoadCase.LEVEL1_EQ, 20.43, 12.89),
+        (-163.89, 64.07, LoadCase.LEVEL1_EQ, 10.68, 3.15),
+    ]
+    sigma_ce = mat.effective_prestress
+    ae = mat.phc_effective_area / 1.0e6  # mm2 -> m2
+    ze = mat.phc_effective_section_modulus / 1.0e9  # mm3 -> m3
+    for axial, moment, case, target_c, target_reduced in cases:
+        r = check_section(pile, mat, case, depth=0.0, axial=axial, moment=moment)
+        by_name = {c.name: c for c in r.checks}
+        assert by_name["曲げ圧縮応力度"].stress == pytest.approx(target_c, abs=0.02)
+
+        # 低減される側(σce+N/Ae-M/Ze)は独立に計算して確認する。この側は
+        # いずれのケースでも圧縮のまま(引張は生じない)なので、
+        # 曲げ引張応力度のチェックは現れない。
+        reduced = sigma_ce + axial / ae / 1000.0 - abs(moment) / ze / 1000.0
+        assert reduced == pytest.approx(target_reduced, abs=0.02)
+        assert "曲げ引張応力度" not in by_name

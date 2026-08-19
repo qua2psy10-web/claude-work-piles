@@ -273,16 +273,21 @@ def _phc_section():
     return area, inertia / (outer / 2.0)
 
 
+PHC_MATERIAL = MaterialSpec(fck=24, effective_prestress=2.0)
+
+
 def test_phc_stress_matches_hand_calculation():
+    """σ = σce + N/A ± M/Z(第52回、Kui_10で σce 項の欠落を発見・修正)。"""
     area, z = _phc_section()
     axial, moment = 2000.0, 100.0
-    result = check_section(PHC, MATERIAL, LoadCase.PERMANENT, 0.0, axial, moment)
+    result = check_section(PHC, PHC_MATERIAL, LoadCase.PERMANENT, 0.0, axial, moment)
 
+    sigma_ce = PHC_MATERIAL.effective_prestress
     sigma_n = axial / area / 1000.0
     sigma_b = moment / z / 1000.0
     by_name = {c.name: c for c in result.checks}
-    assert by_name["軸圧縮応力度"].stress == pytest.approx(sigma_n)
-    assert by_name["曲げ圧縮応力度"].stress == pytest.approx(sigma_n + sigma_b)
+    assert by_name["軸圧縮応力度"].stress == pytest.approx(sigma_ce + sigma_n)
+    assert by_name["曲げ圧縮応力度"].stress == pytest.approx(sigma_ce + sigma_n + sigma_b)
     # 圧縮側が卓越しているため引張の照査は現れない
     assert "曲げ引張応力度" not in by_name
     assert by_name["軸圧縮応力度"].allowable == pytest.approx(23.0)
@@ -291,7 +296,7 @@ def test_phc_stress_matches_hand_calculation():
 
 
 def test_phc_allowable_compression_is_increased_by_load_case():
-    result = check_section(PHC, MATERIAL, LoadCase.LEVEL1_EQ, 0.0, 2000.0, 100.0)
+    result = check_section(PHC, PHC_MATERIAL, LoadCase.LEVEL1_EQ, 0.0, 2000.0, 100.0)
     by_name = {c.name: c for c in result.checks}
     increase = STRESS_INCREASE[LoadCase.LEVEL1_EQ.value]
     assert by_name["曲げ圧縮応力度"].allowable == pytest.approx(27.0 * increase)
@@ -299,8 +304,8 @@ def test_phc_allowable_compression_is_increased_by_load_case():
 
 
 def test_phc_permanent_case_allows_no_tension():
-    # 曲げが卓越して引張が生じるケース
-    result = check_section(PHC, MATERIAL, LoadCase.PERMANENT, 0.0, 100.0, 400.0)
+    # 曲げが卓越して引張が生じるケース(σceを差し引いても正味で引張が残る)
+    result = check_section(PHC, PHC_MATERIAL, LoadCase.PERMANENT, 0.0, 100.0, 400.0)
     tension = next(c for c in result.checks if c.name == "曲げ引張応力度")
     assert tension.stress > 0.0
     assert tension.allowable == 0.0
@@ -321,11 +326,17 @@ def test_phc_seismic_tension_allowable_depends_on_prestress():
         assert tension.allowable == pytest.approx(expected)
 
 
-def test_phc_seismic_tension_requires_prestress_input():
+def test_phc_stress_requires_prestress_input():
+    """σ = σce + N/A ± M/Z の σce 項は圧縮のみのケースでも必須(第52回)。
+
+    以前は「引張が生じないケースでは σce 省略可」としていたが、σce は
+    圧縮側の応力度にも寄与するため、常に必須とした(Kui_10 の純軸圧縮
+    ケースで、σce を欠くと計算例の12.48に対し4.69しか算定できなかった)。
+    """
     with pytest.raises(ValueError, match="有効プレストレス"):
         check_section(PHC, MATERIAL, LoadCase.LEVEL1_EQ, 0.0, 100.0, 400.0)
-    # 引張が生じなければ σce の入力は不要
-    check_section(PHC, MATERIAL, LoadCase.LEVEL1_EQ, 0.0, 2000.0, 100.0)
+    with pytest.raises(ValueError, match="有効プレストレス"):
+        check_section(PHC, MATERIAL, LoadCase.LEVEL1_EQ, 0.0, 2000.0, 100.0)
 
 
 def test_phc_requires_concrete_thickness():
@@ -791,7 +802,7 @@ def test_sc_pile_requires_both_thicknesses():
 
 
 def test_sc_pile_uses_the_h24_concrete_young_modulus():
-    """Ec は SC杭に定められた 3.5×10⁴ N/mm²(H24版)であること。"""
+    """Ec は SC杭に定められた値(n=Es/Ec=6.00、第52回でKui_10により確認)であること。"""
     from core.standards import EC_SC_PILE_CONCRETE
 
     result = check_section(SC, MaterialSpec(), LoadCase.PERMANENT, 0.0, 1200.0, 80.0)

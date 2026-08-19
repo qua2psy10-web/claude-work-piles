@@ -176,7 +176,7 @@ def test_sc_pile_young_modulus_does_not_come_from_the_sigma_ck_table():
     )
     # 表の範囲外の σck でもエラーにならない
     assert pile_section(pile, fck=80).inertia > 0
-    # H24版の規定値。H29版の 4.0×10⁴ とは異なる
+    # H24版の規定値(Kui_10で第52回に独立して裏付け)。H29版の 4.0×10⁴ とは異なる
     assert EC_SC_PILE_CONCRETE == 3.5e7
 
 

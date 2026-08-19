@@ -435,14 +435,28 @@ def test_young_modulus_table_matches_doushi_iii_table_3_3_3():
 
 
 def test_sc_pile_concrete_young_modulus():
-    """SC杭のコンクリートは H24版で Ec = 3.5×10⁴ N/mm²(H29版は 4.0×10⁴)。"""
+    """SC杭のコンクリートは H24版で Ec = 3.5×10⁴ N/mm²(H29版は 4.0×10⁴)。
+
+    フォーラムエイト UC-1 計算書サンプル Kui_10 の 1.2「杭の条件」に
+    「杭体のヤング係数 SC杭：3.50×10⁴ N/mm²」と明記されており、この値が
+    独立に裏付けられた(第52回)。この Ec は断面剛性(EI・Kv)に用いる値で、
+    応力度照査専用のヤング係数比 n(YOUNG_MODULUS_RATIO_SC=6.00)とは別物。
+    """
     assert st.EC_SC_PILE_CONCRETE == 3.5e7
     # σck = 80 は表の範囲外なので、表引きではなく専用の定数である
     assert 80 not in st.EC_CONCRETE
     # 表-3.3.3 の上限(σck = 60)と同値。外挿せず頭打ちにしていると解釈できる
     assert st.EC_SC_PILE_CONCRETE == st.EC_CONCRETE[60]
-    # 資料の n = Es/Ec = 5.71 と整合すること
-    assert st.E_STEEL / st.EC_SC_PILE_CONCRETE == pytest.approx(5.71, abs=0.005)
+
+
+def test_sc_pile_stress_check_young_modulus_ratio_is_the_fixed_value_6():
+    """SC杭の応力度照査専用のヤング係数比は Es/Ec ではなく固定値 6.00
+    (第52回、Kui_10の3.3「杭体応力度」に n=6.00 と明記)。EC_SC_PILE_CONCRETE
+    (=3.5×10⁴、Es/Ec=5.71相当)とは意図的に一致しない。"""
+    assert st.YOUNG_MODULUS_RATIO_SC == 6.0
+    assert st.E_STEEL / st.EC_SC_PILE_CONCRETE != pytest.approx(
+        st.YOUNG_MODULUS_RATIO_SC, abs=0.1
+    )
 
 
 def test_young_modulus_ratio_is_the_fixed_value_15():

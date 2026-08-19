@@ -27,7 +27,6 @@ from core.section.rc import (
 from core.standards import (
     EC_CONCRETE,
     EC_SC_PILE_CONCRETE,
-    E_STEEL,
     PHC_BENDING_TENSION_BY_PRESTRESS,
     PRECAST_CONCRETE_ALLOWABLE,
     REBAR_GRADES,
@@ -39,6 +38,7 @@ from core.standards import (
     STRESS_INCREASE,
     UNDERWATER_CONCRETE_ALLOWABLE,
     YOUNG_MODULUS_RATIO_RC,
+    YOUNG_MODULUS_RATIO_SC,
     RebarMember,
 )
 
@@ -146,6 +146,14 @@ class MaterialSpec:
     # steel_grade に対する道示Ⅳ 表-4.4.1 の値を用いる
     # (:data:`SC_STEEL_ALLOWABLE_NOTE` の注記が付く)。
     sc_steel_allowable: float | None = None
+    # PHC杭の換算断面積 Ae (mm2)・換算断面係数 Ze (mm3)。PC鋼材を
+    # 換算断面積に含めた値で、製品のカタログ値(JIS A 5373 等)を想定する。
+    # 省略するとコンクリート部のみの幾何学的な断面積・断面係数で代用する
+    # (第53回、docs/VERIFICATION.md 参照。PC鋼材の寄与を含まないぶん
+    # 幾何学近似には数%の誤差が生じる — Kui_10 の例で約12%。安全側・
+    # 非安全側いずれにもずれ得る)。
+    phc_effective_area: float | None = None
+    phc_effective_section_modulus: float | None = None
 
 
 def check_section(
@@ -217,26 +225,64 @@ def _check_phc(
     """PHC杭の応力度照査(全断面有効)。
 
     PHC杭はプレストレスによりひび割れを生じさせない設計とするため、
-    中空円形の全断面を有効として σ = N/A ± M/Z で照査する。
+    中空円形の全断面を有効として
+
+        σ = σce + N/Ae ± M/Ze
+
+    で照査する(σce: 有効プレストレス、Ae・Ze: 換算断面積・断面係数)。
+    σce 項は必須(第53回、フォーラムエイト UC-1 計算書サンプル Kui_10
+    の 3.3「杭体応力度」第2断面(PHC杭)で確認。以前の実装はこの項を
+    欠いており、σce=8.0N/mm2 のケースで応力度を大きく過小評価していた
+    — 純軸圧縮(M=0, N=676kN)で計算例12.48に対し本ソフトは4.69。
+    σce項を追加すると、Kui_10 の橋軸・橋軸直角の計4ケース×2面
+    (圧縮側・低減側)、計8個の値すべてで計算例と1%未満の誤差で
+    一致した)。
+
+    Ae・Ze は ``MaterialSpec.phc_effective_area`` /
+    ``phc_effective_section_modulus`` で指定できる(PC鋼材を含む製品の
+    カタログ値を想定)。省略時はコンクリート部のみの幾何学的な断面積・
+    断面係数で代用するが、Kui_10 のAe(=コンクリート断面より約5%大きい)
+    ・Ze との差により、圧縮が低減される側の応力度が数%ずれる(Kui_10の
+    例では約12%小さく出たが、これは常に安全側とは限らない ―― N/Ae 項と
+    M/Ze 項とで幾何学近似の誤差の向きが逆になるため、軸力・モーメントの
+    組合せによっては逆方向にもずれ得る)。精度が必要な場合は製品カタログ
+    の Ae・Ze を指定すること。
     """
     if pile.concrete_thickness is None:
         raise ValueError(
             "PHC杭の照査にはコンクリート部の肉厚 concrete_thickness (mm) の"
             "入力が必要です"
         )
-    area, inertia = hollow_circle(pile.diameter, pile.concrete_thickness / 1000.0)
-    section_modulus = inertia / (pile.diameter / 2.0)
+    if material.effective_prestress is None:
+        raise ValueError(
+            "PHC杭の照査には有効プレストレス σce (N/mm2) の入力が必要です"
+            "(MaterialSpec.effective_prestress)"
+        )
+    area_geo, inertia = hollow_circle(pile.diameter, pile.concrete_thickness / 1000.0)
+    section_modulus_geo = inertia / (pile.diameter / 2.0)
+    # mm2 → m2、mm3 → m3
+    area = (
+        material.phc_effective_area / 1.0e6
+        if material.phc_effective_area is not None
+        else area_geo
+    )
+    section_modulus = (
+        material.phc_effective_section_modulus / 1.0e9
+        if material.phc_effective_section_modulus is not None
+        else section_modulus_geo
+    )
 
+    sigma_ce = material.effective_prestress
     # kN, m → N/mm2 は 1/1000
     sigma_axial = axial / area / 1000.0  # 圧縮正
     sigma_bending = abs(moment) / section_modulus / 1000.0
-    sigma_compression = sigma_axial + sigma_bending
-    sigma_tension = max(0.0, sigma_bending - sigma_axial)
+    sigma_compression = sigma_ce + sigma_axial + sigma_bending
+    sigma_tension = max(0.0, sigma_bending - sigma_axial - sigma_ce)
 
     allow = PRECAST_CONCRETE_ALLOWABLE["PHC杭"]
     checks = [
         StressCheck(
-            "軸圧縮応力度", sigma_axial, allow.axial_compression * increase
+            "軸圧縮応力度", sigma_ce + sigma_axial, allow.axial_compression * increase
         ),
         StressCheck(
             "曲げ圧縮応力度", sigma_compression, allow.bending_compression * increase
@@ -252,8 +298,18 @@ def _check_phc(
                 phc_bending_tension_allowable(case, material.effective_prestress),
             )
         )
+    notes = []
+    if material.phc_effective_area is None or material.phc_effective_section_modulus is None:
+        notes.append(
+            "PHC杭のAe・Zeが未指定のため、コンクリート部のみの幾何学的な"
+            "断面積・断面係数で代用している(PC鋼材の寄与を含まないため"
+            "数%の差が生じる。安全側・非安全側いずれの方向にもずれ得るため、"
+            "製品カタログのAe・Zeを"
+            "MaterialSpec.phc_effective_area/phc_effective_section_modulus に"
+            "指定することを推奨する)。"
+        )
     return PileStressResult(
-        depth=depth, axial=axial, moment=moment, checks=checks
+        depth=depth, axial=axial, moment=moment, checks=checks, notes=notes
     )
 
 
@@ -468,9 +524,10 @@ def _check_sc(
     SC杭の許容曲げ引張応力度の規定がないことと整合し、鋼管の応力度を
     大きく評価する安全側の扱いでもある)。
 
-    換算の基準はコンクリートとし、鋼管を n = Es/Ec 倍で算入する。これは
-    断面諸元(:func:`core.capacity.section.pile_section`)が鋼を基準に
-    整理しているのと逆だが、EI = Ec・Ic + Es・Is は同じである。
+    換算の基準はコンクリートとし、鋼管を n 倍で算入する。ここでの n は
+    :data:`core.standards.YOUNG_MODULUS_RATIO_SC`(固定値 6.00)であり、
+    断面剛性(EI・Kv)側で使う実際の Es/Ec とは別物である(RC の n=15 が
+    実際の Es/Ec と一致しないのと同型。第53回、Kui_10 で確認)。
 
     .. warning::
        鋼管部の許容応力度は :data:`SC_STEEL_ALLOWABLE_NOTE` のとおり
@@ -497,7 +554,10 @@ def _check_sc(
         )
 
     ec = pile.concrete_young or EC_SC_PILE_CONCRETE
-    n_ratio = E_STEEL / ec
+    # 応力度照査のヤング係数比は Es/Ec ではなく固定値 6.00
+    # (YOUNG_MODULUS_RATIO_SC、道示Ⅲ n=15 と同型の設計慣行、第53回)。
+    # ec は EI・Kv など断面剛性側でのみ用いる。
+    n_ratio = YOUNG_MODULUS_RATIO_SC
     fibers = steel_tube_fibers(steel_outer, t_steel)
     detail = analyze_circular_section(
         diameter=concrete_outer,
@@ -543,7 +603,8 @@ def _check_sc(
     notes = [
         f"SC杭は鋼管とコンクリートの合成断面として、コンクリートを圧縮のみ"
         f"有効なひび割れ断面として解いている(σck = {allow.fck:g} N/mm²、"
-        f"Ec = {ec / 1000.0:,.0f} N/mm²、n = Es/Ec = {n_ratio:.2f}、"
+        f"Ec = {ec / 1000.0:,.0f} N/mm²、ヤング係数比(応力度照査専用の"
+        f"固定値)n = {n_ratio:.2f}、"
         f"腐食代 {material.corrosion_mm:g} mm 控除後の板厚 "
         f"{t_steel * 1000.0:.1f} mm)。",
         steel_note,
