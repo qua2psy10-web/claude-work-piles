@@ -213,6 +213,37 @@ def phc_bending_tension_allowable(
     return 0.0
 
 
+def phc_effective_section(pile: PileSpec, material: MaterialSpec) -> tuple[float, float]:
+    """PHC杭の換算断面積 Ae (m2)・換算断面係数 Ze (m3) を返す。
+
+    ``MaterialSpec.phc_effective_area`` / ``phc_effective_section_modulus``
+    (製品カタログ値、mm2・mm3)を指定すればそちらを、未指定ならコンクリート
+    部のみの幾何学的な値で代用する。曲げ応力度照査(:func:`_check_phc`)と
+    せん断照査(:func:`core.section.shear.check_phc_shear`)の両方で同じ
+    Ae・Ze を使う(フォーラムエイト UC-1 計算書サンプル Kui_10 で確認、
+    第55回)。
+    """
+    if pile.concrete_thickness is None:
+        raise ValueError(
+            "PHC杭の照査にはコンクリート部の肉厚 concrete_thickness (mm) の"
+            "入力が必要です"
+        )
+    area_geo, inertia = hollow_circle(pile.diameter, pile.concrete_thickness / 1000.0)
+    section_modulus_geo = inertia / (pile.diameter / 2.0)
+    # mm2 → m2、mm3 → m3
+    area = (
+        material.phc_effective_area / 1.0e6
+        if material.phc_effective_area is not None
+        else area_geo
+    )
+    section_modulus = (
+        material.phc_effective_section_modulus / 1.0e9
+        if material.phc_effective_section_modulus is not None
+        else section_modulus_geo
+    )
+    return area, section_modulus
+
+
 def _check_phc(
     pile: PileSpec,
     material: MaterialSpec,
@@ -258,19 +289,7 @@ def _check_phc(
             "PHC杭の照査には有効プレストレス σce (N/mm2) の入力が必要です"
             "(MaterialSpec.effective_prestress)"
         )
-    area_geo, inertia = hollow_circle(pile.diameter, pile.concrete_thickness / 1000.0)
-    section_modulus_geo = inertia / (pile.diameter / 2.0)
-    # mm2 → m2、mm3 → m3
-    area = (
-        material.phc_effective_area / 1.0e6
-        if material.phc_effective_area is not None
-        else area_geo
-    )
-    section_modulus = (
-        material.phc_effective_section_modulus / 1.0e9
-        if material.phc_effective_section_modulus is not None
-        else section_modulus_geo
-    )
+    area, section_modulus = phc_effective_section(pile, material)
 
     sigma_ce = material.effective_prestress
     # kN, m → N/mm2 は 1/1000

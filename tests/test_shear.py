@@ -884,3 +884,159 @@ def test_cast_in_place_has_no_steel_shear_result():
     )
     assert report.cases[0].steel_shear is None
     assert report.cases[0].shear is not None
+
+
+# ---------------------------------------------------------------------------
+# PHC杭(第55回)
+# ---------------------------------------------------------------------------
+
+from core.section.checks import MaterialSpec  # noqa: E402
+from core.section.shear import (  # noqa: E402
+    check_phc_shear,
+    phc_shear_correction_factor,
+)
+
+PHC = PileSpec(
+    pile_type=PileType.PHC,
+    method=ConstructionMethod.PREBORING,
+    diameter=0.6,
+    length=14.9,
+    concrete_thickness=90.0,
+)
+
+# フォーラムエイト UC-1 計算書サンプル Kui_10 の 3.3「杭体応力度」
+# (第2断面・PHC杭、B種、σce=8.0)より、換算断面積・断面二次モーメント。
+KUI10_PHC_MATERIAL = MaterialSpec(
+    effective_prestress=8.0,
+    phc_effective_area=151000.0,  # Ae = 1510.00×10^2 mm2
+    phc_effective_section_modulus=17.0e6,  # Ze = 17000.00×10^3 mm3
+)
+
+
+def test_phc_shear_correction_factor_matches_kui10():
+    """CN = 1 + Mo/M(Mo=(σce+N/Ae)・Ie/y、1≦CN≦2)がKui_10の5点と一致。"""
+    area = 0.1510  # m2
+    ie = 17.0e6 / 1.0e9 * (0.6 / 2.0)  # Ze(m3)・y(m) = Ie(m4)
+    y = 0.3
+
+    # 常時(M=0): CN は 1+Mo/M が発散し上限2.0に張り付く
+    assert phc_shear_correction_factor(8.0, 676.00, area, ie, y, 0.0) == pytest.approx(2.0)
+
+    # 地震時、橋軸方向(M=73.41)・Nmax/Nmin いずれも上限2.0
+    for axial in (1324.06, -180.06):
+        cn = phc_shear_correction_factor(8.0, axial, area, ie, y, 73.41)
+        assert cn == pytest.approx(2.0)
+
+    # 地震時、橋軸直角方向(M=64.07)・Nmax/Nmin
+    for axial in (1307.89, -163.89):
+        cn = phc_shear_correction_factor(8.0, axial, area, ie, y, 64.07)
+        assert cn == pytest.approx(2.0)
+
+
+def test_check_phc_shear_matches_kui10_all_five_points():
+    """τ=S/Ae、τa=0.85・CN・割増 がKui_10の5点すべてと一致(第55回)。"""
+    cases = [
+        # (shear, moment, axial, case, target_tau, target_allowable)
+        (0.00, 0.00, 676.00, LoadCase.PERMANENT, 0.000, 1.700),
+        (37.61, 73.41, 1324.06, LoadCase.LEVEL1_EQ, 0.249, 2.550),
+        (37.61, 73.41, -180.06, LoadCase.LEVEL1_EQ, 0.249, 2.550),
+        (32.83, 64.07, 1307.89, LoadCase.LEVEL1_EQ, 0.217, 2.550),
+        (32.83, 64.07, -163.89, LoadCase.LEVEL1_EQ, 0.217, 2.550),
+    ]
+    for shear, moment, axial, case, target_tau, target_allow in cases:
+        result = check_phc_shear(
+            PHC, KUI10_PHC_MATERIAL, case,
+            depth=0.0, shear=shear, moment=moment, axial=axial,
+        )
+        assert result.tau == pytest.approx(target_tau, abs=0.001)
+        assert result.allowable == pytest.approx(target_allow, abs=0.001)
+        assert result.all_ok
+
+
+def test_check_phc_shear_uses_the_same_area_as_the_bending_check():
+    """Ae未指定時は曲げ応力度照査(phc_effective_section)と同じ幾何学的
+    近似を使うこと。"""
+    from core.section.checks import phc_effective_section
+
+    material = MaterialSpec(effective_prestress=8.0)
+    area_expected, _ = phc_effective_section(PHC, material)
+    result = check_phc_shear(
+        PHC, material, LoadCase.PERMANENT,
+        depth=0.0, shear=10.0, moment=0.0, axial=500.0,
+    )
+    assert result.area == pytest.approx(area_expected)
+
+
+def test_check_phc_shear_rejects_other_pile_types():
+    with pytest.raises(ValueError, match="PHC杭"):
+        check_phc_shear(
+            STEEL, KUI10_PHC_MATERIAL, LoadCase.PERMANENT,
+            depth=0.0, shear=10.0, moment=0.0, axial=100.0,
+        )
+
+
+def test_check_phc_shear_requires_prestress():
+    material = MaterialSpec()
+    with pytest.raises(ValueError, match="有効プレストレス"):
+        check_phc_shear(
+            PHC, material, LoadCase.PERMANENT,
+            depth=0.0, shear=10.0, moment=0.0, axial=100.0,
+        )
+
+
+def test_analyze_populates_phc_shear_at_the_max_shear_section():
+    """analyze() 経由でも phc_shear が最大せん断力断面で走ること。"""
+    from core.analysis.stability import analyze
+    from core.models import (
+        Footing,
+        FootingLoads,
+        PileArrangement,
+        SoilLayer,
+        SoilProfile,
+        SoilType,
+    )
+
+    profile = SoilProfile(
+        layers=[
+            SoilLayer(name="As", soil_type=SoilType.SAND, thickness=10.0,
+                      n_value=15.0, gamma_t=18.0, gamma_sat=19.0),
+            SoilLayer(name="Ds", soil_type=SoilType.SAND, thickness=25.0,
+                      n_value=45.0, gamma_t=19.0, gamma_sat=20.0),
+        ],
+        gwl=2.0,
+    )
+    report = analyze(
+        PHC.model_copy(update={"length": 18.0}),
+        PileArrangement(nx=3, ny=3, spacing_x=2.5, spacing_y=2.5),
+        Footing(width_x=8.0, width_y=8.0, height=1.5, embedment=2.0),
+        profile,
+        [FootingLoads(case=LoadCase.PERMANENT, v=3000.0, h=200.0, m=800.0)],
+        fck=30,
+        material=MaterialSpec(fck=30, effective_prestress=8.0),
+    )
+    case = report.cases[0]
+    assert case.phc_shear is not None
+    assert case.shear is None  # RC 用のせん断照査は走らない
+    assert case.steel_shear is None
+    assert case.phc_shear.depth == pytest.approx(case.forces.max_shear.depth)
+    assert case.phc_shear.shear == pytest.approx(case.forces.max_shear.shear)
+
+
+def test_check_max_phc_shear_returns_none_without_prestress():
+    """有効プレストレス未入力なら ``_check_max_phc_shear`` は None を返す
+    (エラーにしない。呼び出し元の analyze() は曲げ応力度照査のほうで
+    先にσce必須のValueErrorを送出するため、この単体レベルの分岐は
+    将来 phc_shear だけを個別に使う場合の安全策として存在する)。"""
+    from core.analysis.section_forces import distribution
+    from core.analysis.stability import _check_max_phc_shear
+    from core.capacity.section import pile_section
+
+    pile = PHC.model_copy(update={"length": 15.0})
+    section = pile_section(pile, fck=30)
+    forces = distribution(
+        ei=section.ei, beta=0.3, h0=100.0, m0=200.0, length=pile.length
+    )
+    result = _check_max_phc_shear(
+        pile, MaterialSpec(fck=30), LoadCase.PERMANENT, forces, axial=1000.0
+    )
+    assert result is None

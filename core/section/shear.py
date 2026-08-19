@@ -61,6 +61,7 @@ from core.capacity.section import (
     hollow_circle,
 )
 from core.standards import (
+    PRECAST_CONCRETE_ALLOWABLE,
     REBAR_YIELD_POINT,
     SHEAR_CC_FOUNDATION,
     SHEAR_CE_BY_DEPTH,
@@ -668,4 +669,116 @@ def check_steel_pipe_shear(
         allowable=allowable,
         checks=[ShearCheck("最大せん断応力度 τmax = 2V/A", tau_max, allowable)],
         notes=notes,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 既製コンクリート杭(PHC杭)
+# ---------------------------------------------------------------------------
+#
+# 出典: フォーラムエイト UC-1 計算書サンプル Kui_10 の 3.3「杭体応力度」
+# (第2断面・PHC杭、φ600・t=90・B種、σce=8.0)の「せん断応力度の照査」
+# (第55回)。
+#
+#     τ = S / Ae
+#     CN = 1 + Mo/M(1.0 ≦ CN ≦ 2.0)
+#     Mo = (σce + N/Ae)・Ie/y
+#     τa = 0.85・CN(割増後は τa に STRESS_INCREASE を乗じる)
+#
+# Ae(換算断面積)・Ie(換算断面二次モーメント。Ze = Ie/y と整合)は、曲げ
+# 応力度照査(:func:`core.section.checks.phc_effective_section`)と**同じ
+# 値**を用いる。τa の基本値 0.85 N/mm² は
+# ``PRECAST_CONCRETE_ALLOWABLE["PHC杭"].shear`` として既に定義済みだった
+# (以前は未使用)。M=0(常時、曲げがない)のケースでは CN は 1+Mo/M が
+# 発散し上限 2.0 に張り付くため、実装でもその場合は CN=2.0 とする
+# (Kui_10 の常時ケースで CN=2.000 と明記されていることと整合)。
+
+
+def phc_shear_correction_factor(
+    sigma_ce: float, axial: float, area: float, inertia: float, y: float, moment: float
+) -> float:
+    """PHC杭のせん断照査における軸方向圧縮力の補正係数 CN。
+
+        CN = 1 + Mo/M,  Mo = (σce + N/Ae)・Ie/y   (1.0 ≦ CN ≦ 2.0)
+
+    ``area``(Ae)・``inertia``(Ie)は SI 単位(m2・m4)、``y`` は m。
+    ``moment`` = 0(常時など曲げがないケース)では 1+Mo/M が発散するため、
+    上限の 2.0 を返す(Kui_10 の常時ケースと整合)。
+    """
+    if area <= 0.0 or inertia <= 0.0 or y <= 0.0:
+        raise ValueError("断面積・断面二次モーメント・y は正の値である必要があります")
+    if moment == 0.0:
+        return SHEAR_CN_MAX
+    sigma_axial = axial / area / 1000.0  # N/mm2(圧縮正)
+    mo = (sigma_ce + sigma_axial) * 1000.0 * inertia / y  # kN・m
+    return min(max(1.0 + mo / abs(moment), SHEAR_CN_MIN), SHEAR_CN_MAX)
+
+
+@dataclass(frozen=True)
+class PhcShearResult:
+    """PHC杭のせん断照査の結果。"""
+
+    depth: float  # 杭頭からの深さ (m)
+    shear: float  # 作用せん断力 S (kN)
+    moment: float  # 同断面の曲げモーメント (kN·m)
+    axial: float  # 軸方向圧縮力 (kN)
+    area: float  # 換算断面積 Ae (m2)
+    correction_factor: float  # CN
+    tau: float  # τ = S/Ae (N/mm2)
+    allowable: float  # τa(CN・割増後) (N/mm2)
+    checks: list[ShearCheck] = field(default_factory=list)
+
+    @property
+    def all_ok(self) -> bool:
+        return all(c.ok for c in self.checks)
+
+
+def check_phc_shear(
+    pile: PileSpec,
+    material: "MaterialSpec",
+    case: LoadCase,
+    depth: float,
+    shear: float,
+    moment: float,
+    axial: float,
+) -> PhcShearResult:
+    """PHC杭1断面のせん断照査。
+
+    Ae・Ie は :func:`core.section.checks.phc_effective_section` と同じ値
+    (製品カタログ値を指定しない場合はコンクリート部のみの幾何学的な近似)
+    を用いる。
+    """
+    if pile.pile_type != PileType.PHC:
+        raise ValueError(
+            f"{pile.pile_type.value}にはPHC杭のせん断照査は適用できません"
+        )
+    if material.effective_prestress is None:
+        raise ValueError(
+            "PHC杭のせん断照査には有効プレストレス σce (N/mm2) の入力が"
+            "必要です(MaterialSpec.effective_prestress)"
+        )
+    # 循環インポートを避けるため遅延インポート
+    from core.section.checks import phc_effective_section
+
+    area, section_modulus = phc_effective_section(pile, material)
+    inertia = section_modulus * (pile.diameter / 2.0)
+    y = pile.diameter / 2.0
+
+    cn = phc_shear_correction_factor(
+        material.effective_prestress, axial, area, inertia, y, moment
+    )
+    tau = abs(shear) / area / 1000.0
+    increase = STRESS_INCREASE[case.value]
+    allowable = PRECAST_CONCRETE_ALLOWABLE["PHC杭"].shear * cn * increase
+
+    return PhcShearResult(
+        depth=depth,
+        shear=shear,
+        moment=moment,
+        axial=axial,
+        area=area,
+        correction_factor=cn,
+        tau=tau,
+        allowable=allowable,
+        checks=[ShearCheck("せん断応力度 τ = S/Ae", tau, allowable)],
     )

@@ -765,6 +765,35 @@ def _render_stress_checks(case) -> None:
         for note in ss.notes:
             st.caption(f"※ {note}")
 
+    if case.phc_shear is not None:
+        ps = case.phc_shear
+        st.markdown("**杭体のせん断照査(PHC杭)**")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("換算断面積 Ae", f"{ps.area * 1.0e6:,.0f} mm²")
+        c2.metric("軸方向圧縮力による補正係数 CN", f"{ps.correction_factor:.3f}")
+        c3.metric("τ = S/Ae", f"{ps.tau:.3f} N/mm²")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "照査項目": c.name,
+                        "応力度 (N/mm²)": round(c.stress, 3),
+                        "許容値 (N/mm²)": round(c.allowable, 3),
+                        "比": round(c.ratio, 3),
+                        "判定": c.judgement,
+                    }
+                    for c in ps.checks
+                ]
+            ),
+            width="stretch",
+        )
+        st.caption(
+            f"照査断面: 深さ {ps.depth:.2f} m(せん断力最大)、"
+            f"S = {ps.shear:,.1f} kN。Ae・Ieは曲げ応力度照査と同じ値"
+            "(MaterialSpec.phc_effective_area等を指定しない場合はコンクリート部"
+            "のみの幾何学的な近似)。"
+        )
+
     if case.pile_head is not None:
         st.markdown("**杭頭結合部の照査(道示Ⅳ 12.9.3)**")
         st.dataframe(
