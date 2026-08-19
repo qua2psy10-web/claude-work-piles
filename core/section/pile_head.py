@@ -25,11 +25,16 @@
   (:func:`horizontal_edge_punching_shear`。フーチング有効厚さ h' は
   利用者が与える必要があるため :func:`check_pile_head` には自動配線していない)
 * 縁端距離の確認と、水平方向押抜きせん断照査の要否判定 — 実装済み
-* 杭頭補強鉄筋の**定着長** — 実装済み(:func:`anchorage_length`)
+* 杭頭補強鉄筋の**定着長**(コンクリートへの埋込み) — 実装済み
+  (:func:`anchorage_length`)
+* 杭頭補強鉄筋の**溶接長**(鋼管杭への溶接定着) — 実装済み
+  (:func:`weld_length`。第52回)
 * **仮想RC断面の照査** — 実装済み(:func:`virtual_rc_section_check`。
-  ``core.section.rc.analyze_circular_rc`` をそのまま転用している。
-  H24 で削除済みの鉄筋材質(SD295 等)には未対応。net引張軸力でも
-  モーメントが卓越すれば部分圧縮ゾーンを解析可能(第51回で対応)だが、
+  ``core.section.rc.analyze_circular_section`` をそのまま転用している。
+  半径の異なる複数の鉄筋環(鋼管杭の外周溶接鉄筋+中詰め補強鉄筋)にも
+  対応(第52回)。H24 で削除済みの鉄筋材質(SD295 等)には未対応。
+  net引張軸力でもモーメントが卓越すれば部分圧縮ゾーンを解析可能
+  (第51回で対応)だが、
   モーメントを伴わない純引張(M=0, N<0)は引き続き未対応)
 
 .. warning::
@@ -43,7 +48,7 @@ from dataclasses import dataclass
 from core.models.loads import LoadCase
 from core.models.pile import Footing, PileArrangement
 from core.section.checks import StressCheck, rebar_tension_allowable
-from core.section.rc import RcStressResult, RebarLayout, analyze_circular_rc
+from core.section.rc import RcStressResult, RebarLayout, analyze_circular_section
 from core.standards import (
     EC_CONCRETE,
     PULL_OUT_RESISTANCE_THICKNESS,
@@ -334,6 +339,44 @@ def anchorage_length(
     return AnchorageLength(lo=lo, required=lo + 10.0 * bar_diameter_mm)
 
 
+def weld_length(
+    sigma_sa: float, tau_sa: float, bar_diameter_mm: float, leg_size_mm: float
+) -> float:
+    """杭頭補強鉄筋(鋼管杭に溶接で定着する場合)の必要すみ肉溶接長を求める。
+
+        Ls = σsa・Ast / (2・0.7・τsa・λ)
+
+    鉄筋が負担する引張力 σsa・Ast を、鉄筋周囲**両側**のすみ肉溶接
+    (有効のど厚 0.7・λ)のせん断抵抗で受け持たせる。鋼管杭は場所打ち杭・
+    RC/PHC杭のようにコンクリートへの定着(:func:`anchorage_length`)が
+    使えないため、方法B の鋼管杭ではこちらを用いる。
+
+    ``Ast``(鉄筋1本の公称断面積)は ``REBAR_NOMINAL_AREA`` から算定する
+    (表にない呼び径は幾何学的な値で代用)。``sigma_sa``(鉄筋の許容引張
+    応力度)・``tau_sa``(すみ肉溶接の許容せん断応力度)は利用者が与える
+    (本ソフトは溶接の許容応力度表を持たない)。
+
+    出典: フォーラムエイト UC-1 計算書サンプル Kui_9 の 6.5
+    「杭頭補強鉄筋溶接部のせん断応力度による溶接長」(第52回)。
+    D29(Ast=642.4、σsa=200、τsa=94.5)で、脚長λ=6,7,8,9(mm)に対し
+    Ls=162,139,121,108(mm)(計算例と一致、4点とも誤差1mm以内)。
+
+    確度C(他社製品の出力から4点のみ。原典は未照合)。
+    """
+    if sigma_sa <= 0 or tau_sa <= 0 or bar_diameter_mm <= 0 or leg_size_mm <= 0:
+        raise ValueError(
+            "許容応力度・すみ肉溶接の許容せん断応力度・鉄筋径・脚長は"
+            "正の値である必要があります"
+        )
+    nominal_area = REBAR_NOMINAL_AREA.get(bar_diameter_mm)
+    ast = (
+        nominal_area
+        if nominal_area is not None
+        else math.pi * bar_diameter_mm**2 / 4.0
+    )
+    return round(sigma_sa * ast / (2.0 * 0.7 * tau_sa * leg_size_mm))
+
+
 @dataclass(frozen=True)
 class VirtualRcSectionResult:
     """杭頭の仮想鉄筋コンクリート断面の照査結果。"""
@@ -348,7 +391,7 @@ class VirtualRcSectionResult:
 
 def virtual_rc_section_check(
     virtual_diameter: float,
-    rebar: RebarLayout,
+    rebar: RebarLayout | list[RebarLayout],
     fck: int,
     rebar_grade: str,
     case: LoadCase,
@@ -358,7 +401,10 @@ def virtual_rc_section_check(
     """杭頭の仮想鉄筋コンクリート断面を照査する(方法B、道示Ⅳ 12.9.3)。
 
     ``virtual_diameter`` は仮想RC断面の直径 Do(実際の杭径より大きい。
-    利用者が与える設計値)。``rebar`` はその断面に配置する補強鉄筋。
+    利用者が与える設計値)。``rebar`` はその断面に配置する補強鉄筋
+    ――単一の :class:`RebarLayout` のほか、**半径の異なる複数の鉄筋環**
+    (鋼管杭で「杭外周溶接鉄筋」と「中詰め補強鉄筋」を併用する場合など)を
+    ``list[RebarLayout]`` として渡せる(第52回、Kui_9 の6.3で確認)。
 
     フーチングコンクリート(水中施工ではない)として ``SIGMA_CA_CONCRETE``
     を、鉄筋圧縮側は場所打ち杭の照査と同じ ``SIGMA_SA_REBAR_COMPRESSION``
@@ -367,8 +413,8 @@ def virtual_rc_section_check(
     (SD295 等)は選択できない**(``rebar_tension_allowable`` が拒む)。
 
     軸力が負(net で引張)でもモーメントが卓越していれば圧縮縁側に部分圧縮
-    ゾーンが残ることがあり、``analyze_circular_rc`` はそのケースを解ける
-    (第51回、Kui_8 の地震時Nminケースで検証)。モーメントを伴わない
+    ゾーンが残ることがあり、``analyze_circular_section`` はそのケースを
+    解ける(第51回、Kui_8 の地震時Nminケースで検証)。モーメントを伴わない
     純引張(M=0, N<0)は引き続き未対応で ``NotImplementedError`` となる。
 
     出典: フォーラムエイト UC-1 計算書サンプル Kui_4 の 6.3
@@ -391,9 +437,13 @@ def virtual_rc_section_check(
     if fck not in EC_CONCRETE:
         raise ValueError(f"σck={fck} は未対応です")
     increase = STRESS_INCREASE[case.value]
-    detail = analyze_circular_rc(
+    layers = [rebar] if isinstance(rebar, RebarLayout) else rebar
+    fibers = [
+        fiber for layer in layers for fiber in layer.fibers(virtual_diameter)
+    ]
+    detail = analyze_circular_section(
         diameter=virtual_diameter,
-        rebar=rebar,
+        fibers=fibers,
         ec=EC_CONCRETE[fck],
         n_ratio=YOUNG_MODULUS_RATIO_RC,
         axial=axial,

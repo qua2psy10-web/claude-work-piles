@@ -1196,3 +1196,66 @@ def test_virtual_rc_section_check_handles_net_tension_with_moment_kui8():
     by_name = {c.name: c for c in result.checks}
     assert by_name["仮想RC断面コンクリート圧縮応力度"].stress == pytest.approx(1.50, abs=0.01)
     assert by_name["仮想RC断面鉄筋引張応力度"].stress == pytest.approx(58.15, abs=0.01)
+
+
+def test_weld_length_matches_kui9_all_four_leg_sizes():
+    """杭頭補強鉄筋溶接部の溶接長(Kui_9 6.5、鋼管杭・方法B)。
+
+    D29(Ast=642.4mm2)、σsa=200、τsa=94.5 で、脚長λ=6,7,8,9(mm)に
+    対し計算例は Ls=162,139,121,108(mm)。式 Ls=σsa・Ast/(2・0.7・τsa・λ)
+    は4点すべてで一致した(第52回で新規発見・実装)。
+    """
+    from core.section.pile_head import weld_length
+
+    cases = [(6, 162), (7, 139), (8, 121), (9, 108)]
+    for leg, target in cases:
+        ls = weld_length(sigma_sa=200.0, tau_sa=94.5, bar_diameter_mm=29.0, leg_size_mm=leg)
+        assert ls == pytest.approx(target, abs=1.0)
+
+
+def test_qd_matches_kui9_for_naka_bori_gravel_layer():
+    """Kui_9(中掘り杭・鋼管杭φ1000)の5.5で qd=200・N(≦10000)砂れき層と
+    明記されており、`QD_SPECS["中掘り"]["礫質土"]`(coef=200, cap=10000)
+    と一致することを確認(第52回、修正なし)。"""
+    from core.standards import QD_SPECS
+
+    assert QD_SPECS["中掘り"]["礫質土"].coef == 200.0
+    assert QD_SPECS["中掘り"]["礫質土"].cap == 10000.0
+
+
+def test_virtual_rc_section_check_accepts_multiple_rebar_rings_kui9():
+    """Kui_9(鋼管杭φ1000、6.3)は「杭外周溶接鉄筋」(D29×30本@108、
+    かぶり86mm)と「中詰め補強鉄筋」(D29×24本@115、かぶり161mm)の
+    半径の異なる2つの鉄筋環を併用する。従来 ``virtual_rc_section_check``
+    は単一の ``RebarLayout`` しか受け付けず、この配筋を表現できなかった
+    (第52回で ``list[RebarLayout]`` にも対応するよう拡張)。
+
+    橋軸方向・最前列・地震時(N=5333.1kN, M=382.6kN・m)で σc=4.75
+    (計算例4.64)・鉄筋圧縮応力度=68.13(計算例66.62)、橋軸方向・2列目
+    以降・地震時Nmin(N=-661.0kN, M=382.6kN・m、net引張+モーメント、
+    第51回の修正が効くケース)で σc=1.59(計算例1.57)・鉄筋引張応力度
+    =63.39(計算例63.30)と一致(既知の1〜3%の保守側バイアスの範囲内)。
+    """
+    from core.models import LoadCase
+    from core.section.pile_head import virtual_rc_section_check
+
+    rings = [
+        RebarLayout(count=30, diameter_mm=29.0, cover_mm=86.0),
+        RebarLayout(count=24, diameter_mm=29.0, cover_mm=161.0),
+    ]
+
+    r1 = virtual_rc_section_check(
+        virtual_diameter=1.2, rebar=rings, fck=21, rebar_grade="SD345",
+        case=LoadCase.LEVEL1_EQ, axial=5333.1, moment=382.6,
+    )
+    by_name = {c.name: c for c in r1.checks}
+    assert by_name["仮想RC断面コンクリート圧縮応力度"].stress == pytest.approx(4.64, abs=0.15)
+    assert by_name["仮想RC断面鉄筋圧縮応力度"].stress == pytest.approx(66.62, abs=2.0)
+
+    r2 = virtual_rc_section_check(
+        virtual_diameter=1.2, rebar=rings, fck=21, rebar_grade="SD345",
+        case=LoadCase.LEVEL1_EQ, axial=-661.0, moment=382.6,
+    )
+    by_name2 = {c.name: c for c in r2.checks}
+    assert by_name2["仮想RC断面コンクリート圧縮応力度"].stress == pytest.approx(1.57, abs=0.05)
+    assert by_name2["仮想RC断面鉄筋引張応力度"].stress == pytest.approx(63.30, abs=0.5)
