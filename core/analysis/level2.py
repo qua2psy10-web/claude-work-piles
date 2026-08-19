@@ -22,14 +22,21 @@
 よる弾性解析となり、:func:`check_soil_reaction_limit` により pHU を超える
 区間があるかを**診断**して非安全側になっている深度を提示する。
 
-杭体の曲げ剛性低下(M-φ 関係)も追跡していない。杭体の降伏は、鋼管杭では
-全塑性モーメント Mp(:func:`plastic_moment_steel_pipe`)、その他の杭種では
-利用者が与える降伏曲げモーメントとの比較で判定する。したがって本解析は
+杭体の曲げ剛性低下(M-φ 関係)は、``moment_curvature`` に骨格曲線を与えた
+場合に**要素ごとに割線剛性を更新して追跡する**(分布バネモデルのとき)。
+骨格曲線の折れ点の値そのものを算定できるのは鋼管杭のバイリニア型
+(:func:`yield_moment_steel_pipe` / :func:`plastic_moment_steel_pipe`)のみで、
+RC・PHC・SC杭のトリリニア型は利用者が与える。骨格曲線を与えない場合、杭体は
+弾性のままで、降伏は ``yield_moment`` との比較のみで判定する。
 
-    「軸方向バネの塑性化と杭体降伏の判定に基づく降伏点の推定」
+したがって本解析は
 
-であり、道示Ⅴ の完全な地震時保有水平耐力法ではない。残る主な差は、要素ごと
-に M-φ で曲げ剛性を更新していない点である。制限は :data:`LIMITATIONS`
+    「軸方向バネ・水平地盤バネ・(骨格曲線を与えた場合は)杭体曲げの
+      非線形を追跡するプッシュオーバーによる降伏点の推定」
+
+である。道示Ⅴ の地震時保有水平耐力法との残る主な差は、除荷経路(履歴則)を
+持たない単調載荷であることと、RC・PHC・SC杭の骨格曲線の折れ点を断面から
+自動算定できないことである。制限は :data:`LIMITATIONS`
 (および解析方法に応じて :data:`LIMITATION_ELASTIC_GROUND` /
 :data:`LIMITATION_BNWF`)に列挙し、結果にも注記として付す。
 """
@@ -62,6 +69,7 @@ from core.capacity.springs import (
 from core.models.loads import LoadCase
 from core.models.pile import Footing, PileArrangement, PileSpec, PileType
 from core.models.soil import SoilProfile
+from core.section.moment_curvature import MomentCurvature
 from core.section.rc import RebarLayout, StirrupLayout
 from core.section.shear import ShearCapacity, shear_capacity_level2
 from core.soil.liquefaction import SoilReduction
@@ -102,11 +110,16 @@ LIMITATION_BNWF = (
 )
 
 LIMITATIONS: tuple[str, ...] = (
-    "杭体の M-φ 関係は、鋼管杭・鋼管ソイルセメント杭のバイリニア型"
-    "(全塑性モーメント Mp を上限とする)の折れ点のみを算定している。"
-    "場所打ちRC杭・PHC杭・SC杭のトリリニア型(ひび割れ C・降伏 Y・終局 U)は"
-    "未実装で、これらの杭種では My を入力する必要がある。"
-    "いずれの杭種でも、塑性ヒンジ後の曲げ剛性低下は追跡していない。",
+    "杭体の M-φ 骨格曲線を ``moment_curvature`` に与えると、分布バネモデル"
+    "(BNWF)で**要素ごとに割線曲げ剛性を低下させる**(塑性ヒンジ)。"
+    "ただし骨格曲線の**折れ点の値そのもの**を算定できるのは鋼管杭・鋼管"
+    "ソイルセメント杭のバイリニア型(降伏 My → 全塑性 Mp)のみである。"
+    "場所打ちRC杭・PHC杭・SC杭のトリリニア型(ひび割れ Mc・降伏 My・"
+    "終局 Mu)の折れ点は、コンクリートの引張強度・終局ひずみなど原典未照合の"
+    "定数を必要とするため算定していない。これらの杭種では折れ点を利用者が"
+    "与える必要がある(与えなければ杭体は弾性のまま扱われる)。"
+    "また要素内のモーメント変化は両端の大きいほうで代表させた近似であり、"
+    "除荷経路(履歴則)は追跡していない(単調載荷のプッシュオーバーのみ)。",
     "押込み支持力の上限値 Pu・引抜き抵抗力の上限値 Pt は、**地盤から決まる値**"
     "(許容応力度設計法の式で安全率を 1 とした値)と、**杭体から決まる値**"
     "(Rpu = 0.85σck・Ac + σy・As、Ptu = σy・As)の小さいほうとしている。"
@@ -870,6 +883,19 @@ class LateralModel:
         """直近の :meth:`responses` で塑性化した地盤バネの数。"""
         return 0
 
+    @property
+    def plastic_hinges(self) -> int:
+        """直近の :meth:`responses` で降伏した杭体要素の数。
+
+        杭体の曲げ非線形(M-φ)を扱わないモデルでは常に 0。
+        """
+        return 0
+
+    @property
+    def exceeds_ultimate_curvature(self) -> bool:
+        """終局曲率 φu を超えた杭体要素があるか。"""
+        return False
+
 
 @dataclass
 class LinearLateralModel(LateralModel):
@@ -903,6 +929,8 @@ class BnwfLateralModel(LateralModel):
     front: PileLateralModel
     back: PileLateralModel
     _plastic: int = 0
+    _hinges: int = 0
+    _exceeds_ultimate: bool = False
 
     def responses(
         self, u: float, theta: float
@@ -915,6 +943,8 @@ class BnwfLateralModel(LateralModel):
         moment = np.where(self.front_mask, front.moment, 0.0)
         tangent = n_front * front.tangent
         self._plastic = n_front * front.plastic_nodes
+        self._hinges = n_front * front.plastic_hinges
+        self._exceeds_ultimate = front.exceeds_ultimate_curvature
 
         if n_back:
             back = self.back.solve(u, theta)
@@ -922,11 +952,25 @@ class BnwfLateralModel(LateralModel):
             moment = np.where(self.front_mask, moment, back.moment)
             tangent = tangent + n_back * back.tangent
             self._plastic += n_back * back.plastic_nodes
+            self._hinges += n_back * back.plastic_hinges
+            self._exceeds_ultimate = (
+                self._exceeds_ultimate or back.exceeds_ultimate_curvature
+            )
         return shear, moment, tangent
 
     @property
     def plastic_ground_nodes(self) -> int:
         return self._plastic
+
+    @property
+    def plastic_hinges(self) -> int:
+        """直近の :meth:`responses` で降伏した杭体要素の数(全杭合計)。"""
+        return self._hinges
+
+    @property
+    def exceeds_ultimate_curvature(self) -> bool:
+        """終局曲率 φu を超えた杭体要素があるか。"""
+        return self._exceeds_ultimate
 
     @property
     def kh_range(self) -> tuple[float, float]:
@@ -944,6 +988,7 @@ def build_bnwf_model(
     reduction: SoilReduction | None = None,
     n_elements: int = 50,
     layered: bool = True,
+    moment_curvature: "MomentCurvature | None" = None,
 ) -> BnwfLateralModel:
     """杭・地盤の諸元から BNWF モデルを組み立てる。
 
@@ -1002,6 +1047,7 @@ def build_bnwf_model(
             limits=limits(front_row),
             reduction=de,
             n_elements=n_elements,
+            moment_curvature=moment_curvature,
         )
 
     return BnwfLateralModel(
@@ -1198,6 +1244,7 @@ def run_level2(
     bnwf_layered_kh: bool = True,
     max_factor: float = 3.0,
     steps: int = 120,
+    moment_curvature: "MomentCurvature | None" = None,
 ) -> Level2Result:
     """杭・地盤の諸元からレベル2地震時の照査までを一括で行う。
 
@@ -1349,13 +1396,23 @@ def run_level2(
         lateral = build_bnwf_model(
             pile, arrangement, footing, profile, section, springs,
             reduction=reduction, n_elements=bnwf_elements,
-            layered=bnwf_layered_kh,
+            layered=bnwf_layered_kh, moment_curvature=moment_curvature,
         )
         extra_notes.append(
             f"水平方向は分布バネモデル(BNWF、{bnwf_elements} 分割)で解析し、"
             "地盤反力度が pHU に達した節点は頭打ちとして扱っている"
             "(杭頭バネ K1〜K4 による弾性解析ではない)。"
         )
+        if moment_curvature is not None:
+            mc = moment_curvature
+            extra_notes.append(
+                f"杭体の曲げ非線形を M-φ 骨格曲線(折れ点 {len(mc.points)} 点、"
+                f"My = {mc.yield_moment:,.0f} kN·m、"
+                f"Mu = {mc.ultimate_moment:,.0f} kN·m、"
+                f"φu = {mc.ultimate_curvature:.6g} 1/m)として考慮し、"
+                "要素ごとに割線曲げ剛性を低下させている(塑性ヒンジ)。"
+                "要素内のモーメント変化は両端の大きいほうで代表させた近似である。"
+            )
         kh_min, kh_max = lateral.kh_range
         extra_notes.append(
             f"水平方向地盤反力係数 kH は**節点ごとに**当該深度の地層の E0 から"

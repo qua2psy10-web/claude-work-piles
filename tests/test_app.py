@@ -264,3 +264,44 @@ def test_region_selector_falls_back_to_manual_entry():
     ).run()
     assert not at.exception
     assert any("cIz" in n.label for n in at.number_input)
+
+
+# --- M-φ 骨格曲線の入力欄(第54回) -------------------------------------------
+
+
+def test_parse_moment_curvature_reads_break_points():
+    from app.main import parse_moment_curvature
+
+    mc = parse_moment_curvature(
+        "0.0012680, 257.3\n0.0055255, 456.4\n0.0184293, 543.9"
+    )
+    assert mc is not None
+    assert len(mc.points) == 3
+    assert mc.yield_moment == 456.4
+    assert mc.ultimate_moment == 543.9
+
+
+def test_parse_moment_curvature_treats_blank_as_elastic():
+    from app.main import parse_moment_curvature
+
+    assert parse_moment_curvature("") is None
+    assert parse_moment_curvature("   \n\n  ") is None
+    assert parse_moment_curvature("# コメントだけ\n") is None
+
+
+def test_parse_moment_curvature_accepts_tabs_and_extra_whitespace():
+    from app.main import parse_moment_curvature
+
+    mc = parse_moment_curvature("  0.001\t100  \n 0.002 ,  200 \n")
+    assert mc is not None
+    assert mc.points == ((0.001, 100.0), (0.002, 200.0))
+
+
+def test_parse_moment_curvature_reports_the_offending_line():
+    import pytest as _pytest
+    from app.main import parse_moment_curvature
+
+    with _pytest.raises(ValueError, match="2 行目"):
+        parse_moment_curvature("0.001, 100\n0.002")
+    with _pytest.raises(ValueError, match="数値として読めません"):
+        parse_moment_curvature("0.001, たくさん")

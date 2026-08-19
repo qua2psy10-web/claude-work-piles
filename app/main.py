@@ -11,6 +11,7 @@ import streamlit as st
 
 from core.analysis.comparison import compare
 from core.analysis.level2 import run_level2
+from core.section.moment_curvature import MomentCurvature
 from core.analysis.stability import StabilityReport, analyze
 from core.models import (
     BendingAxis,
@@ -110,6 +111,30 @@ def _opt(value) -> float | None:
     except (TypeError, ValueError):
         pass
     return float(value)
+
+
+def parse_moment_curvature(text: str) -> "MomentCurvature | None":
+    """「曲率, モーメント」を1行ずつ書いたテキストを M-φ 骨格曲線に変換する。
+
+    空欄・空白のみなら ``None`` を返す(杭体を弾性のまま扱う)。
+    """
+    points = []
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in line.replace("\t", ",").split(",") if p.strip()]
+        if len(parts) != 2:
+            raise ValueError(
+                f"{lineno} 行目: 「曲率, モーメント」の2つの数値が必要です({raw!r})"
+            )
+        try:
+            points.append((float(parts[0]), float(parts[1])))
+        except ValueError as exc:
+            raise ValueError(f"{lineno} 行目: 数値として読めません({raw!r})") from exc
+    if not points:
+        return None
+    return MomentCurvature(tuple(points))
 
 
 def layers_from_df(df: pd.DataFrame) -> list[SoilLayer]:
@@ -1430,6 +1455,20 @@ def main() -> None:
                     "降伏点 σy から自動算定する"
                 ),
             )
+            l2_mphi_text = st.text_area(
+                "杭体の M-φ 骨格曲線(任意)", value="", height=90,
+                key=f"l2mphi_{nonce}",
+                placeholder="0.0012680, 257.3\n0.0055255, 456.4\n0.0184293, 543.9",
+                help=(
+                    "1行に「曲率(1/m), モーメント(kN·m)」を折れ点の数だけ"
+                    "昇順で書く。2行ならバイリニア(降伏→全塑性、鋼管杭)、"
+                    "3行ならトリリニア(ひび割れ→降伏→終局、RC・PHC・SC杭)。"
+                    "与えると分布バネモデルで**杭体の曲げ剛性低下(塑性ヒンジ)**"
+                    "を追跡する。空欄なら杭体は弾性のまま。"
+                    "**折れ点の値は本ソフトでは算定できない**ため、製品カタログ値"
+                    "または別途の断面解析による値を入力すること。"
+                ),
+            )
         with l2c3:
             structure_type = st.selectbox(
                 "下部構造の種別", [t.value for t in StructureType],
@@ -1476,6 +1515,7 @@ def main() -> None:
                     e0_method=E0Method(e0_method),
                     reduction=reduction,
                     bnwf_elements=int(bnwf_elements),
+                    moment_curvature=parse_moment_curvature(l2_mphi_text),
                 )
             except (ValueError, NotImplementedError, RuntimeError) as exc:
                 st.error(f"計算エラー: {exc}")

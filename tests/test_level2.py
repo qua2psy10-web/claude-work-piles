@@ -1024,3 +1024,53 @@ def test_no_group_note_when_spacing_is_wide_enough():
     assert result.group_factor == 1.0
     # 群杭の補正に関する実行時の注記(制限事項の一覧とは別)が出ないこと
     assert not any("乗じ" in n for n in result.notes)
+
+
+def test_moment_curvature_caps_the_pile_head_moment_end_to_end():
+    """M-φ を与えると、杭頭モーメントが骨格曲線の上限を超えなくなること
+    (第54回)。
+
+    弾性のままだと杭体が全塑性モーメントを超えるモーメントを負担できて
+    しまい、降伏水平力を過大に評価する。M-φ による剛性低下を入れると
+    モーメントが Mu で頭打ちになり、より早く降伏に達する。
+    """
+    from core.analysis.level2 import run_level2
+    from core.section.moment_curvature import MomentCurvature
+
+    kwargs = dict(v_load=9000.0, h_load=9000.0, m_load=30000.0, max_factor=6.0)
+    mc = MomentCurvature.bilinear(
+        yield_curvature=0.0026821, yield_moment=3192.5,
+        ultimate_curvature=0.0039703, ultimate_moment=4725.9,
+    )
+
+    elastic = run_level2(STEEL, ARRANGEMENT, FOOTING, ground_with_kep(), **kwargs)
+    nonlinear = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, ground_with_kep(),
+        moment_curvature=mc, **kwargs
+    )
+
+    def peak_moment(result):
+        return max(abs(r.moment) for s in result.steps for r in s.reactions)
+
+    # 弾性モデルは全塑性モーメントを超えるモーメントを許してしまう
+    assert peak_moment(elastic) > mc.ultimate_moment
+    # M-φ を与えると骨格曲線の上限で頭打ちになる
+    assert peak_moment(nonlinear) <= mc.ultimate_moment * 1.01
+    # 剛性低下により、同じ載荷倍率まで進めたときの水平力は小さくなる
+    assert nonlinear.steps[-1].h < elastic.steps[-1].h
+    assert any("骨格曲線(折れ点" in n for n in nonlinear.notes)
+
+
+def test_moment_curvature_is_opt_in_and_leaves_the_elastic_path_untouched():
+    """M-φ を与えなければ従来どおり杭体は弾性のままであること。"""
+    from core.analysis.level2 import run_level2
+
+    kwargs = dict(v_load=9000.0, h_load=3000.0, m_load=12000.0)
+    a = run_level2(STEEL, ARRANGEMENT, FOOTING, ground_with_kep(), **kwargs)
+    b = run_level2(
+        STEEL, ARRANGEMENT, FOOTING, ground_with_kep(),
+        moment_curvature=None, **kwargs
+    )
+    assert a.steps[-1].h == pytest.approx(b.steps[-1].h)
+    assert a.steps[-1].u == pytest.approx(b.steps[-1].u)
+    assert not any("骨格曲線(折れ点" in n for n in a.notes)

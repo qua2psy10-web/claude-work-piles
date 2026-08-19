@@ -51,6 +51,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from core.section.moment_curvature import MomentCurvature
+
 # 杭頭自由度(y, φ)の数
 _HEAD_DOF = 2
 
@@ -68,18 +70,24 @@ class HeadResponse:
     displacements: np.ndarray  # 各節点の水平変位 y (m)
     plastic_nodes: int  # 上限に達した地盤バネの数
     iterations: int
+    # 降伏モーメントに達した梁要素の数(M-φ を与えた場合のみ。塑性ヒンジ)
+    plastic_hinges: int = 0
+    # 終局曲率 φu を超えた要素があるか(M-φ を与えた場合のみ)
+    exceeds_ultimate_curvature: bool = False
 
     @property
     def yielded_ground(self) -> bool:
         return self.plastic_nodes > 0
 
+    @property
+    def yielded_body(self) -> bool:
+        """杭体に塑性ヒンジが生じているか。"""
+        return self.plastic_hinges > 0
 
-def _beam_stiffness(ei: float, element_length: float, n_elements: int) -> np.ndarray:
-    """Hermite 梁要素による全体剛性マトリクス。"""
-    ndof = 2 * (n_elements + 1)
-    k = np.zeros((ndof, ndof))
-    le = element_length
-    ke = (ei / le**3) * np.array(
+
+def _element_stiffness(ei: float, le: float) -> np.ndarray:
+    """Hermite 梁要素1つの剛性マトリクス 4×4。"""
+    return (ei / le**3) * np.array(
         [
             [12.0, 6.0 * le, -12.0, 6.0 * le],
             [6.0 * le, 4.0 * le * le, -6.0 * le, 2.0 * le * le],
@@ -87,9 +95,34 @@ def _beam_stiffness(ei: float, element_length: float, n_elements: int) -> np.nda
             [6.0 * le, 2.0 * le * le, -6.0 * le, 4.0 * le * le],
         ]
     )
+
+
+def _element_dofs(e: int) -> np.ndarray:
+    return np.array([2 * e, 2 * e + 1, 2 * e + 2, 2 * e + 3])
+
+
+def _beam_stiffness(
+    ei: "float | np.ndarray", element_length: float, n_elements: int
+) -> np.ndarray:
+    """Hermite 梁要素による全体剛性マトリクス。
+
+    ``ei`` はスカラー(全要素で一定)または長さ ``n_elements`` の配列
+    (要素ごとの曲げ剛性。M-φ による剛性低下を反映する場合に用いる)。
+    """
+    ndof = 2 * (n_elements + 1)
+    k = np.zeros((ndof, ndof))
+    le = element_length
+    ei_array = np.atleast_1d(np.asarray(ei, dtype=float))
+    if ei_array.size == 1:
+        ei_array = np.full(n_elements, float(ei_array[0]))
+    elif ei_array.shape != (n_elements,):
+        raise ValueError(
+            f"要素ごとの EI の要素数が分割数と一致しません "
+            f"({ei_array.shape[0]} ≠ {n_elements})"
+        )
     for e in range(n_elements):
-        idx = np.array([2 * e, 2 * e + 1, 2 * e + 2, 2 * e + 3])
-        k[np.ix_(idx, idx)] += ke
+        idx = _element_dofs(e)
+        k[np.ix_(idx, idx)] += _element_stiffness(float(ei_array[e]), le)
     return k
 
 
@@ -153,6 +186,16 @@ class PileLateralModel:
            だからである。**原典で要確認**。
     n_elements:
         分割数。
+    moment_curvature:
+        杭体の M-φ 骨格曲線(:class:`core.section.moment_curvature.
+        MomentCurvature`)。与えると**杭体の曲げ剛性低下**を要素ごとに
+        追跡する(レベル2の塑性ヒンジ)。``None`` なら杭体は弾性のまま。
+
+        .. note::
+           要素内でモーメントは線形に変化するが、本実装は要素ごとに
+           **両端モーメントの大きいほう**で決まる割線剛性を要素全体に
+           一様に適用する(集中化した近似)。分割数を増やすほど厳密解に
+           近づく。
     """
 
     def __init__(
@@ -164,12 +207,14 @@ class PileLateralModel:
         limits: np.ndarray | None = None,
         reduction: np.ndarray | None = None,
         n_elements: int = 50,
+        moment_curvature: "MomentCurvature | None" = None,
     ) -> None:
         if n_elements < 2:
             raise ValueError("分割数は 2 以上である必要があります")
         if ei <= 0 or diameter <= 0 or length <= 0:
             raise ValueError("EI・杭径・杭長は正の値である必要があります")
         self.kh = _node_kh(kh, n_elements)
+        self.moment_curvature = moment_curvature
 
         self.ei = ei
         self.diameter = diameter
@@ -205,7 +250,11 @@ class PileLateralModel:
                 raise ValueError("地盤反力度の上限値は正の値である必要があります")
             self.spring_limit = limits * diameter * tributary * self.reduction  # kN
 
-        self.beam = _beam_stiffness(ei, length / n_elements, n_elements)
+        self.element_length = length / n_elements
+        # 弾性(初期)の梁剛性。head_stiffness() など弾性状態の参照に使う
+        self.beam_elastic = _beam_stiffness(ei, self.element_length, n_elements)
+        self.beam = self.beam_elastic.copy()
+        self.element_ei = np.full(n_elements, float(ei))
         self._state = np.zeros(2 * (n_elements + 1))
 
     # --- 地盤バネ ----------------------------------------------------------
@@ -223,6 +272,52 @@ class PileLateralModel:
         force[0::2] = self._spring_force(u[0::2])
         return force
 
+    # --- 杭体の曲げ非線形(M-φ) --------------------------------------------
+
+    def element_curvatures(self, u: np.ndarray | None = None) -> np.ndarray:
+        """要素ごとの**両端曲率の絶対値の大きいほう** (1/m)。
+
+        Hermite 要素の曲率 κ = d²v/dx² は変位場のみで決まり、曲げ剛性には
+        依存しない。両端の曲率は
+
+            κ1 = −6/le²·v1 − 4/le·φ1 + 6/le²·v2 − 2/le·φ2
+            κ2 = +6/le²·v1 + 2/le·φ1 − 6/le²·v2 + 4/le·φ2
+
+        (端力 ``ke @ ue = [F1, C1, F2, C2]`` に対し M1 = −C1 = EI·κ1、
+        M2 = C2 = EI·κ2 と整合する)。
+        """
+        state = self._state if u is None else u
+        le = self.element_length
+        b1 = np.array([-6.0 / le**2, -4.0 / le, 6.0 / le**2, -2.0 / le])
+        b2 = np.array([6.0 / le**2, 2.0 / le, -6.0 / le**2, 4.0 / le])
+        curvatures = np.zeros(self.n_elements)
+        for e in range(self.n_elements):
+            ue = state[_element_dofs(e)]
+            curvatures[e] = max(abs(float(b1 @ ue)), abs(float(b2 @ ue)))
+        return curvatures
+
+    def element_moments(self, u: np.ndarray | None = None) -> np.ndarray:
+        """要素ごとの曲げモーメント (kN·m、絶対値)。
+
+        M-φ を与えていれば骨格曲線上の値、与えていなければ EI·κ。
+        """
+        curvatures = self.element_curvatures(u)
+        if self.moment_curvature is None:
+            return self.element_ei * curvatures
+        return np.array(
+            [abs(self.moment_curvature.moment_at(k)) for k in curvatures]
+        )
+
+    def _updated_element_ei(self, u: np.ndarray) -> np.ndarray:
+        """現在の変位から、要素ごとの割線曲げ剛性を求める。"""
+        if self.moment_curvature is None:
+            return self.element_ei
+        curvatures = self.element_curvatures(u)
+        return np.array(
+            [self.moment_curvature.secant_ei_at(k) for k in curvatures],
+            dtype=float,
+        )
+
     # --- 解 ----------------------------------------------------------------
 
     def solve(
@@ -236,14 +331,27 @@ class PileLateralModel:
 
         杭頭の 2 自由度を拘束し、残りの自由度について Newton-Raphson で
         釣合いを解く。杭先端は自由(境界条件なし)。
+
+        M-φ を与えている場合は、反復のたびに要素ごとの割線曲げ剛性を
+        更新する(杭体の曲げ非線形)。梁の剛性低下ぶんは接線行列にも
+        割線剛性として反映するため、収束は Newton 法より緩やかになる。
+        その分 ``max_iter`` を大きめにとる。
         """
         u = self._state.copy()
         u[0] = u_head
         u[1] = -theta_head  # φ = −θ
 
+        if self.moment_curvature is not None:
+            max_iter = max(max_iter, 200)
+
         scale = max(abs(u_head), abs(theta_head), 1.0e-6)
         iterations = 0
         for iterations in range(1, max_iter + 1):
+            if self.moment_curvature is not None:
+                self.element_ei = self._updated_element_ei(u)
+                self.beam = _beam_stiffness(
+                    self.element_ei, self.element_length, self.n_elements
+                )
             residual = self.beam @ u + self._resistance(u)
             free = residual[_HEAD_DOF:]
             if float(np.max(np.abs(free))) <= tol * self.ei * scale:
@@ -260,6 +368,18 @@ class PileLateralModel:
         residual = self.beam @ u + self._resistance(u)
         head = residual[:_HEAD_DOF]  # [F1, C1]
 
+        hinges = 0
+        exceeds_ultimate = False
+        if self.moment_curvature is not None:
+            moments = self.element_moments(u)
+            hinges = int(
+                sum(1 for m in moments if self.moment_curvature.yielded(m))
+            )
+            ultimate = self.moment_curvature.ultimate_curvature
+            exceeds_ultimate = bool(
+                np.any(self.element_curvatures(u) > ultimate)
+            )
+
         return HeadResponse(
             shear=float(head[0]),
             moment=float(-head[1]),  # M = −C1
@@ -267,6 +387,8 @@ class PileLateralModel:
             displacements=u[0::2].copy(),
             plastic_nodes=int(np.count_nonzero(self._spring_tangent(u[0::2]) == 0.0)),
             iterations=iterations,
+            plastic_hinges=hinges,
+            exceeds_ultimate_curvature=exceeds_ultimate,
         )
 
     def _condensed_tangent(self, u: np.ndarray) -> np.ndarray:
@@ -287,7 +409,12 @@ class PileLateralModel:
     def head_stiffness(self) -> np.ndarray:
         """弾性状態の杭頭剛性 ((u, θ) 系の 2×2)。
 
-        地盤バネが上限に達していない状態の値。Chang の式による
-        [[K1, K2], [K3, K4]] と比較できる。
+        地盤バネが上限に達しておらず、杭体も曲げ剛性が低下していない状態の
+        値。Chang の式による [[K1, K2], [K3, K4]] と比較できる。
         """
-        return self._condensed_tangent(np.zeros(2 * (self.n_elements + 1)))
+        saved = self.beam
+        self.beam = self.beam_elastic
+        try:
+            return self._condensed_tangent(np.zeros(2 * (self.n_elements + 1)))
+        finally:
+            self.beam = saved
