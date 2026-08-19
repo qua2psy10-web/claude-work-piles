@@ -378,35 +378,76 @@ def analyze_circular_section(
 
     Notes
     -----
-    引張軸力(axial ≦ 0)には未対応。杭基礎で引抜きが生じる場合は
-    別途照査が必要。
+    軸力が正(圧縮)の場合は全断面有効(非ひび割れ)またはひび割れ断面の
+    圧縮側で釣り合いを取る、従来どおりの解法を用いる。
+
+    軸力が負(net で引張)でもモーメントが卓越していれば、圧縮縁側に
+    部分的な圧縮ゾーンが残ることがある(道示Ⅴ 耐震設計で杭頭の Nmin が
+    地震時に軸力反転してもモーメントが大きい場合など)。この場合も
+    偏心量 e = M/N が y_n の単調関数であることを使って同じ二分法で
+    解けるが、圧縮側の換算断面積 s_axial(y_n) がゼロを横切る特異点を
+    挟んで枝が変わるため、まずその特異点を求めてから軸力の符号に応じた
+    枝を探索する(フォーラムエイト UC-1 Kui_8 の計算例、6.3 仮想RC断面
+    照査の地震時 Nmin ケース(N=−43kN, M=147kN・m)で検証: σc=1.4997
+    (目標1.50)、鉄筋引張応力度=58.15(目標58.15)と一致、第51回)。
+
+    モーメントがゼロの純引張(コンクリートが引張を全く負担できない)は
+    この単純化モデルでは解けないため、引き続き未対応として例外を送出する。
     """
-    if axial <= 0:
-        raise NotImplementedError(
-            "引張軸力を受ける断面の応力度計算は未実装です"
-            "(引抜き時は別途照査が必要)"
-        )
     if inner_diameter < 0.0 or inner_diameter >= diameter:
         raise ValueError("中空部の内径は 0 以上、外径未満である必要があります")
     radius = diameter / 2.0
     inner_radius = inner_diameter / 2.0
     m_abs = abs(moment)
-    target_e = m_abs / axial
 
-    area_t, inertia_t = transformed_section(
-        diameter, None, n_ratio, inner_diameter, fibers
-    )
-    kern = inertia_t / (area_t * radius)
-    if target_e <= kern:
-        return _uncracked_result(
-            radius, fibers, n_ratio, ec, axial, m_abs, area_t, inertia_t
+    if axial == 0.0:
+        raise NotImplementedError(
+            "軸力がゼロの断面の応力度計算は未対応です"
+        )
+    if axial < 0.0 and moment == 0.0:
+        raise NotImplementedError(
+            "モーメントを伴わない純引張軸力を受ける断面の応力度計算は"
+            "未実装です(引抜き時は別途照査が必要)"
         )
 
-    # ひび割れ断面: e(y_n) は y_n について単調増加
-    lower, upper = -radius, radius - 1e-12
+    target_e = m_abs / axial
+
+    if axial > 0.0:
+        area_t, inertia_t = transformed_section(
+            diameter, None, n_ratio, inner_diameter, fibers
+        )
+        kern = inertia_t / (area_t * radius)
+        if target_e <= kern:
+            return _uncracked_result(
+                radius, fibers, n_ratio, ec, axial, m_abs, area_t, inertia_t
+            )
+        # ひび割れ断面: e(y_n) は y_n について単調増加
+        lower, upper = -radius, radius - 1e-12
+    else:
+        # net 引張: 圧縮側換算断面積が正から負に変わる特異点 y0 を境に
+        # e(y_n) の枝が変わる。target_e(<0) が乗る枝は y0 より圧縮縁側。
+        y0_lower, y0_upper = -radius, radius - 1e-12
+        for _ in range(max_iter):
+            mid = (y0_lower + y0_upper) / 2.0
+            s_axial, _ = _section_sums(radius, inner_radius, fibers, n_ratio, mid)
+            if s_axial > 0.0:
+                y0_lower = mid
+            else:
+                y0_upper = mid
+            if y0_upper - y0_lower < tol:
+                break
+        lower, upper = y0_upper, radius - 1e-12
+        e_upper = _eccentricity(radius, inner_radius, fibers, n_ratio, upper, signed=True)
+        if target_e > e_upper:
+            raise NotImplementedError(
+                "この軸力・モーメントの組合せ(net引張、圧縮ゾーンが"
+                "確保できない)は未対応です(引抜き時は別途照査が必要)"
+            )
+
+    signed = axial < 0.0
     for _ in range(max_iter):
         mid = (lower + upper) / 2.0
-        if _eccentricity(radius, inner_radius, fibers, n_ratio, mid) < target_e:
+        if _eccentricity(radius, inner_radius, fibers, n_ratio, mid, signed=signed) < target_e:
             lower = mid
         else:
             upper = mid
@@ -415,7 +456,7 @@ def analyze_circular_section(
     y_n = (lower + upper) / 2.0
 
     s_axial, _ = _section_sums(radius, inner_radius, fibers, n_ratio, y_n)
-    if s_axial <= 0:
+    if axial > 0.0 and s_axial <= 0:
         raise ValueError("断面が軸力を負担できません(配筋・断面を見直してください)")
     curvature = axial / (ec * s_axial)
 
@@ -478,8 +519,20 @@ def _eccentricity(
     fibers: "list[SteelFiber]",
     n_ratio: float,
     y_n: float,
+    signed: bool = False,
 ) -> float:
+    """e(y_n) = s_moment/s_axial。
+
+    ``signed=False``(圧縮側の枝、axial>0)では s_axial ≦ 0 を「圧縮ゾーンが
+    確保できない」とみなし +inf を返す。``signed=True``(net引張の枝、
+    axial<0)では s_axial が負であること自体が正常なので、符号付きで
+    そのまま返す(呼び出し側で特異点 y0 を避けた範囲だけを渡すこと)。
+    """
     s_axial, s_moment = _section_sums(radius, inner_radius, fibers, n_ratio, y_n)
+    if signed:
+        if s_axial == 0.0:
+            return math.copysign(math.inf, s_moment)
+        return s_moment / s_axial
     if s_axial <= 0:
         return math.inf
     return s_moment / s_axial

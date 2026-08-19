@@ -1162,3 +1162,37 @@ def test_phc_pile_body_axial_limits_with_a_different_pc_steel_grade_kui6():
         prestressing_steel_yield=1250.0,
     )
     assert limits.pull == pytest.approx(2068.0, abs=1.0)
+
+
+def test_virtual_rc_section_check_handles_net_tension_with_moment_kui8():
+    """仮想RC断面照査で net 軸力が引張(N<0)でもモーメントが卓越すれば
+    部分圧縮ゾーンが残るケースを解けること(Kui_8 6.3、地震時Nminケース、
+    第51回で発見・修正)。
+
+    従来は ``analyze_circular_rc`` が axial<=0 を一律 NotImplementedError
+    としていたため、このケースは計算不能だった。偏心量 e=M/N が y_n の
+    単調関数であることを利用した二分法を net 引張側にも一般化し、
+    独立した数値積分による軸力・モーメント釣合いチェック
+    (test_rc_section.py 側)でも解の正しさを確認済み。
+
+    Do=1.4m、D22×20本@141、かぶり250mm、SD345、σck=24、地震時
+    Nmin(N=-43.0kN, M=147.0kN・m)で σc=1.4997(計算例1.50)、
+    鉄筋引張応力度=58.1505(計算例58.15)と一致(ほぼ誤差なし。
+    圧縮ゾーンが小さく、換算断面積の(n-1)/n差の影響が小さいため)。
+    """
+    from core.models import LoadCase
+    from core.section.pile_head import virtual_rc_section_check
+
+    rebar = RebarLayout(count=20, diameter_mm=22.0, cover_mm=250.0)
+    result = virtual_rc_section_check(
+        virtual_diameter=1.4,
+        rebar=rebar,
+        fck=24,
+        rebar_grade="SD345",
+        case=LoadCase.LEVEL1_EQ,
+        axial=-43.0,
+        moment=147.0,
+    )
+    by_name = {c.name: c for c in result.checks}
+    assert by_name["仮想RC断面コンクリート圧縮応力度"].stress == pytest.approx(1.50, abs=0.01)
+    assert by_name["仮想RC断面鉄筋引張応力度"].stress == pytest.approx(58.15, abs=0.01)

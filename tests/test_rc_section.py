@@ -110,9 +110,51 @@ def test_pure_axial_gives_uniform_stress():
     assert result.sigma_s_tension == 0.0
 
 
-def test_tension_axial_not_supported():
+def test_pure_tension_axial_not_supported():
+    """モーメントを伴わない純引張(net軸力<0, M=0)は未対応(部分圧縮ゾーンが
+    存在しえず、コンクリート無引張の単純化モデルでは解けない)。"""
     with pytest.raises(NotImplementedError):
-        analyze_circular_rc(D, REBAR, EC, N_RATIO, axial=-100.0, moment=500.0)
+        analyze_circular_rc(D, REBAR, EC, N_RATIO, axial=-100.0, moment=0.0)
+
+
+def test_net_tension_with_large_moment_still_has_partial_compression_zone():
+    """net軸力が引張でもモーメントが卓越していれば、圧縮縁側に部分圧縮
+    ゾーンが残ることがある(道示Ⅴ耐震設計で杭頭のNminが地震時に軸力反転
+    してもモーメントが大きい場合など)。フォーラムエイト UC-1 Kui_8の
+    計算例(6.3仮想RC断面照査、地震時Nmin: N=-43kN, M=147kN・m)で
+    実際に発生することを確認した(第51回)。ここでは別断面(D=1.0,
+    REBAR)で、独立した数値積分による軸力・モーメントの釣合いチェックで
+    解の正しさを検証する。"""
+    result = analyze_circular_rc(D, REBAR, EC, N_RATIO, axial=-100.0, moment=500.0)
+    assert not result.fully_compressed
+    assert result.sigma_c > 0.0
+    assert result.sigma_s_tension > 0.0
+
+    radius = D / 2.0
+    y_n = result.neutral_axis_y
+    k = result.curvature
+
+    def width(y: float) -> float:
+        return 2.0 * math.sqrt(max(0.0, radius**2 - y**2))
+
+    n = 4000
+    ys = [y_n + (radius - y_n) * i / n for i in range(n + 1)]
+    n_force = 0.0
+    m_force = 0.0
+    for i in range(n):
+        y_mid = (ys[i] + ys[i + 1]) / 2.0
+        dy = ys[i + 1] - ys[i]
+        stress = EC * k * (y_mid - y_n)  # kN/m2, 圧縮正
+        n_force += stress * width(y_mid) * dy
+        m_force += stress * width(y_mid) * y_mid * dy
+    for fiber in REBAR.fibers(D):
+        ratio = (N_RATIO - 1.0) if fiber.y > y_n else N_RATIO
+        sigma = ratio * EC * k * (fiber.y - y_n)
+        n_force += sigma * fiber.area
+        m_force += sigma * fiber.area * fiber.y
+
+    assert n_force == pytest.approx(-100.0, abs=0.1)
+    assert m_force == pytest.approx(500.0, abs=0.1)
 
 
 def test_excessive_cover_rejected():

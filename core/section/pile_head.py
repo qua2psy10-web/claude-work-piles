@@ -28,8 +28,9 @@
 * 杭頭補強鉄筋の**定着長** — 実装済み(:func:`anchorage_length`)
 * **仮想RC断面の照査** — 実装済み(:func:`virtual_rc_section_check`。
   ``core.section.rc.analyze_circular_rc`` をそのまま転用している。
-  H24 で削除済みの鉄筋材質(SD295 等)や、引張軸力を受ける断面
-  (第31回来の既知の制限)には未対応)
+  H24 で削除済みの鉄筋材質(SD295 等)には未対応。net引張軸力でも
+  モーメントが卓越すれば部分圧縮ゾーンを解析可能(第51回で対応)だが、
+  モーメントを伴わない純引張(M=0, N<0)は引き続き未対応)
 
 .. warning::
    照査式・許容値は原典未照合の項目を含む(docs/VERIFICATION.md 参照)。
@@ -365,9 +366,10 @@ def virtual_rc_section_check(
     rebar_tension_allowable` を用いる。**H24 で削除済みの鉄筋材質
     (SD295 等)は選択できない**(``rebar_tension_allowable`` が拒む)。
 
-    軸力が負(引抜き支配)になる場合、``analyze_circular_rc`` の既知の制限
-    (引張軸力を受ける断面の応力度計算は未実装)により ``NotImplementedError``
-    となる。
+    軸力が負(net で引張)でもモーメントが卓越していれば圧縮縁側に部分圧縮
+    ゾーンが残ることがあり、``analyze_circular_rc`` はそのケースを解ける
+    (第51回、Kui_8 の地震時Nminケースで検証)。モーメントを伴わない
+    純引張(M=0, N<0)は引き続き未対応で ``NotImplementedError`` となる。
 
     出典: フォーラムエイト UC-1 計算書サンプル Kui_4 の 6.3
     「仮想鉄筋コンクリート断面照査」(SD345、Do=1.4m、D35×24本@118、
