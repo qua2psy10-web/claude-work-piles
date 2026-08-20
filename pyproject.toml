@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kuikiso"
+version = "0.1.0"
+description = "杭基礎の設計(H24年道示版)"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.5",
+    "pandas>=2.0",
+    "streamlit>=1.30",
+    "numpy>=1.24",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.setuptools]
+packages = [
+    "core",
+    "core.models",
+    "core.soil",
+    "core.capacity",
+    "core.analysis",
+    "core.section",
+    "core.report",
+    "app",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
