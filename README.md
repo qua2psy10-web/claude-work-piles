@@ -13,6 +13,21 @@ streamlit run app/main.py   # リポジトリルートから実行
 
 Python 3.10 以上。
 
+## ブラウザで使う(常時ホスティング)
+
+コマンド実行なしで、URLを開くだけで使えるようにするには [Streamlit Community Cloud](https://streamlit.io/cloud) への無料デプロイが最も簡単。手順は以下の通り(このリポジトリのオーナー本人のみが実行可能な操作):
+
+1. https://share.streamlit.io を開き、GitHubアカウントでサインインする。
+2. 初回のみ、Streamlitからのリポジトリアクセスを許可する(GitHub連携の認可画面が出る)。
+3. 「Create app」→「Deploy a public app from GitHub」を選択。
+4. 以下を入力してデプロイ:
+   - Repository: `qua2psy10-web/claude-work-piles`
+   - Branch: `main`
+   - Main file path: `app/main.py`
+5. 数分でビルドが完了し、`https://<任意の名前>.streamlit.app` のような固定URLが発行される。以降はそのURLを開くだけで使える。
+
+デプロイに必要な設定ファイル(`requirements.txt`、`.streamlit/config.toml`)は本リポジトリに同梱済みのため、上記の入力だけで動作する。`main` ブランチを更新するたびに自動で再デプロイされる。
+
 ## 使い方
 
 GUI のタブを左から順に進める。

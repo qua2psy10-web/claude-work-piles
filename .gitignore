@@ -4,4 +4,5 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
