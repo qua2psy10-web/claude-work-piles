@@ -35,6 +35,13 @@ from core.report.excel import build_workbook
 from core.report.markdown import build_report
 from core.section.checks import MaterialSpec, rebar_tension_allowable
 from core.section.footing import check_footing_flexure, check_footing_shear
+from core.section.footing_forces import (
+    FootingSection,
+    PileReaction,
+    design_moment,
+    design_shear,
+    section_forces,
+)
 from core.section.rc import RebarLayout, StirrupLayout
 from core.soil.liquefaction import SoilReduction, assess_liquefaction
 from core.validation import InvalidInputError
@@ -1622,11 +1629,143 @@ def main() -> None:
         st.subheader("底版(フーチング)本体の許容応力度法照査")
         st.caption(
             "底版を**単鉄筋長方形RC断面**として、1つの照査断面の曲げ・せん断を"
-            "照査する(道示Ⅳ 8章)。**断面力 M・S は入力**する — 杭反力・"
-            "底版自重・上載土重量から各照査位置の断面力を求める計算は、柱の"
-            "位置・寸法を要し、原典の計算例が格点モデルで解いていて検証"
-            "できないため未実装。docs/VERIFICATION.md 第58回を参照。"
+            "照査する(道示Ⅳ 8章)。**断面力 M・S は入力**する。杭反力と底版"
+            "諸元から断面力を求めたい場合は、下の「断面力の算定」で算出して"
+            "から入力欄に転記する。docs/VERIFICATION.md 第58・59回を参照。"
         )
+
+        with st.expander("断面力の算定(杭反力・底版自重から M・S を求める)"):
+            st.caption(
+                "照査位置より**外側**(自由端側)の杭列と底版自重・上載土重量・"
+                "浮力から、片持ち梁として断面力を算定する。位置はいずれも"
+                "**断面力を算定する側の底版端**からの距離で与える。"
+            )
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                st.markdown("**底版諸元**")
+                sf_pos = st.number_input(
+                    "照査位置 L (m)", 0.0, 100.0, value=1.200, step=0.05,
+                    key=f"sfpos_{nonce}", help="底版端から照査断面までの距離",
+                )
+                sf_depth = st.number_input(
+                    "奥行き長 b (m)", 0.1, 100.0, value=8.5, step=0.1,
+                    key=f"sfdepth_{nonce}",
+                    help="計算方向に直交する方向の底版幅",
+                )
+                sf_h1 = st.number_input(
+                    "フーチング厚 h1 (m)", 0.1, 10.0, value=2.5, step=0.1,
+                    key=f"sfh1_{nonce}",
+                )
+                sf_hg = st.number_input(
+                    "図心高さ hg (m)", 0.0, 10.0, value=1.25, step=0.05,
+                    key=f"sfhg_{nonce}",
+                    help="底版下面から図心まで。テーパなしなら h1/2",
+                )
+                sf_total = st.number_input(
+                    "底版全幅 B (m)", 0.1, 100.0, value=8.5, step=0.1,
+                    key=f"sftotal_{nonce}",
+                    help="単位幅あたりへの換算(Mo = M/B)に用いる",
+                )
+            with sc2:
+                st.markdown("**上載条件**")
+                sf_h2 = st.number_input(
+                    "水位より下の上載土厚 h2 (m)", 0.0, 20.0, value=0.0, step=0.1,
+                    key=f"sfh2_{nonce}",
+                )
+                sf_h3 = st.number_input(
+                    "水位より上の上載土厚 h3 (m)", 0.0, 20.0, value=2.0, step=0.1,
+                    key=f"sfh3_{nonce}",
+                )
+                sf_hw = st.number_input(
+                    "水位 hw (m)", 0.0, 20.0, value=0.0, step=0.1,
+                    key=f"sfhw_{nonce}", help="底版下面からの高さ",
+                )
+                sf_gc = st.number_input(
+                    "γc (kN/m³)", 0.0, 40.0, value=24.5, step=0.1,
+                    key=f"sfgc_{nonce}",
+                )
+                sf_gsat = st.number_input(
+                    "γsat (kN/m³)", 0.0, 40.0, value=20.0, step=0.1,
+                    key=f"sfgsat_{nonce}",
+                )
+                sf_gt = st.number_input(
+                    "γt (kN/m³)", 0.0, 40.0, value=19.0, step=0.1,
+                    key=f"sfgt_{nonce}",
+                )
+                sf_gw = st.number_input(
+                    "γw (kN/m³)", 0.0, 20.0, value=10.0, step=0.1,
+                    key=f"sfgw_{nonce}",
+                )
+
+            st.markdown("**杭列の反力**(照査位置以内の杭列のみが寄与する)")
+            sf_piles = st.data_editor(
+                pd.DataFrame(
+                    {
+                        "位置 (m)": [1.200, 4.233],
+                        "鉛直反力 V (kN)": [3909.03, 4610.55],
+                        "水平反力 H (kN)": [106.736, 106.736],
+                        "杭頭モーメント Mt (kN·m)": [2515.97, 2515.97],
+                    }
+                ),
+                num_rows="dynamic",
+                key=f"sfpiles_{nonce}",
+            )
+
+            if st.button("断面力を算定", key=f"sfrun_{nonce}"):
+                try:
+                    section = FootingSection(
+                        depth=sf_depth, thickness=sf_h1,
+                        submerged_soil=sf_h2, dry_soil=sf_h3, water_head=sf_hw,
+                        gamma_concrete=sf_gc, gamma_saturated=sf_gsat,
+                        gamma_moist=sf_gt, gamma_water=sf_gw,
+                    )
+                    piles = [
+                        PileReaction(
+                            position=float(row["位置 (m)"]),
+                            vertical=float(row["鉛直反力 V (kN)"]),
+                            horizontal=float(row["水平反力 H (kN)"]),
+                            head_moment=float(row["杭頭モーメント Mt (kN·m)"]),
+                        )
+                        for _, row in sf_piles.iterrows()
+                        if pd.notna(row["位置 (m)"])
+                    ]
+                    forces = section_forces(
+                        sf_pos, piles, section, centroid_height=sf_hg
+                    )
+                except (ValueError, TypeError, KeyError) as exc:
+                    st.error(f"計算エラー: {exc}")
+                else:
+                    st.dataframe(
+                        pd.DataFrame(
+                            {
+                                "項目": [
+                                    "ΣW (kN)", "Σ(W·x) (kN·m)",
+                                    "Sp (kN)", "Mp1 (kN·m)", "Mp2 (kN·m)",
+                                    "Mp3 (kN·m)", "Mp (kN·m)",
+                                    "S = Sp − ΣW (kN)", "M = Mp − Σ(W·x) (kN·m)",
+                                    "So = S/B (kN/m)", "Mo = M/B (kN·m/m)",
+                                ],
+                                "値": [
+                                    round(forces.dead_load, 2),
+                                    round(forces.dead_load_moment, 2),
+                                    round(forces.pile_shear, 2),
+                                    round(forces.pile_moment_vertical, 2),
+                                    round(forces.pile_moment_horizontal, 2),
+                                    round(forces.pile_moment_head, 2),
+                                    round(forces.pile_moment, 2),
+                                    round(forces.shear, 2),
+                                    round(forces.moment, 2),
+                                    round(design_shear(forces.shear, sf_total), 2),
+                                    round(design_moment(forces.moment, sf_total), 2),
+                                ],
+                            }
+                        ),
+                        hide_index=True,
+                    )
+                    st.caption(
+                        "上の S・M を下の照査入力欄に転記する。単位幅あたりで"
+                        "照査する場合は So・Mo と有効幅 1.0 m を用いる。"
+                    )
         fc1, fc2, fc3 = st.columns(3)
         with fc1:
             ft_fck = st.selectbox(
