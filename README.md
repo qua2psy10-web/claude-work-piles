@@ -73,6 +73,8 @@ pytest
 標準定数は `test_standards_pinned.py` で全値をピン止めしており、定数の
 変更は必ずレビュー対象の差分として現れる。
 
+`main` への push・PR ごとに GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)) で自動実行される。
+
 ## 構成
 
 - `core/` — 計算エンジン(GUIから独立)
