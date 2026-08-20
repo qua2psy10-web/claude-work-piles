@@ -305,3 +305,31 @@ def test_parse_moment_curvature_reports_the_offending_line():
         parse_moment_curvature("0.001, 100\n0.002")
     with _pytest.raises(ValueError, match="数値として読めません"):
         parse_moment_curvature("0.001, たくさん")
+
+
+# --- 底版照査タブ(第58回) ---------------------------------------------------
+
+
+def test_footing_button_produces_result():
+    """底版照査タブの既定値(Kui_8 の計算例)で例外なく結果が出ること。"""
+    at = run_app()
+    button = next(b for b in at.button if "底版照査を実行" in b.label)
+    button.click().run()
+    assert not at.exception
+    # 曲げ・せん断・最小鉄筋量の3ブロックが描画される
+    markdown = " ".join(m.value for m in at.markdown)
+    assert "曲げ応力度照査" in markdown
+    assert "せん断応力度照査" in markdown
+    assert "最小鉄筋量" in markdown
+
+
+def test_footing_tab_reports_input_errors_without_crashing():
+    """有効高を部材高より大きくするなど不整合な入力でもエラー表示で止まること。"""
+    at = run_app()
+    # 鉄筋量を 0 にすると singly_reinforced_stress が ValueError を送出する
+    rebar = next(n for n in at.number_input if n.label.startswith("引張主鉄筋量"))
+    rebar.set_value(0.0).run()
+    button = next(b for b in at.button if "底版照査を実行" in b.label)
+    button.click().run()
+    assert not at.exception
+    assert any("計算エラー" in e.value for e in at.error)

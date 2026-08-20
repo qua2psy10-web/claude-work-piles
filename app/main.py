@@ -33,7 +33,8 @@ from core.models import (
 )
 from core.report.excel import build_workbook
 from core.report.markdown import build_report
-from core.section.checks import MaterialSpec
+from core.section.checks import MaterialSpec, rebar_tension_allowable
+from core.section.footing import check_footing_flexure, check_footing_shear
 from core.section.rc import RebarLayout, StirrupLayout
 from core.soil.liquefaction import SoilReduction, assess_liquefaction
 from core.validation import InvalidInputError
@@ -45,6 +46,7 @@ from core.standards import (
     SIGMA_CA_CONCRETE,
     SIGMA_A_STEEL,
     REBAR_GRADES,
+    STRESS_INCREASE,
     E0Method,
     GroundMotionType,
     GroundType,
@@ -459,6 +461,67 @@ def _render_stability(report: StabilityReport) -> None:
                     ),
                     width="stretch",
                 )
+
+
+def _render_footing(flexure, shear) -> None:
+    """底版の曲げ・せん断照査の結果を表示する。"""
+
+    def _table(checks):
+        return pd.DataFrame(
+            [
+                {
+                    "照査項目": c.name,
+                    "応力度 (N/mm²)": round(c.stress, 3),
+                    "許容値 (N/mm²)": round(c.allowable, 3),
+                    "比": round(c.ratio, 3),
+                    "判定": c.judgement,
+                }
+                for c in checks
+            ]
+        )
+
+    st.markdown("**曲げ応力度照査(単鉄筋長方形断面)**")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("中立軸 x", f"{flexure.stress.neutral_axis * 1000:,.1f} mm")
+    c2.metric("必要鉄筋量", f"{flexure.required_area * 1.0e6:,.0f} mm²")
+    c3.metric("配置鉄筋量", f"{flexure.rebar_area_per_m:,.0f} mm²/m")
+    st.dataframe(_table(flexure.checks), width="stretch")
+    st.caption(
+        f"応力中心間距離 d − x/3 = {flexure.stress.lever_arm:.3f} m。"
+        f"必要鉄筋量は σs がちょうど許容値になる量。"
+    )
+
+    st.markdown("**最小鉄筋量の照査(道示Ⅳ 7.3(1))**")
+    st.metric(
+        "判定", "OK" if flexure.min_rebar_ok else "NG",
+        delta=None,
+    )
+    st.caption(
+        f"Mu = {flexure.ultimate_moment:,.1f} kN·m、"
+        f"Mc = {flexure.cracking_moment:,.1f} kN·m。判定根拠: "
+        f"{flexure.min_rebar_note}"
+    )
+
+    st.markdown("**せん断応力度照査**")
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("τm", f"{shear.tau_m:.3f} N/mm²")
+    s2.metric("τa(ce·cpt·cdc·τa1)", f"{shear.tau_a:.3f} N/mm²")
+    s3.metric("pt", f"{shear.pt:.3f} %")
+    s4.metric("Sca", f"{shear.concrete_shear:,.0f} kN")
+    st.dataframe(_table(shear.checks), width="stretch")
+    st.caption(
+        f"補正係数: ce = {shear.ce:.3f}、cpt = {shear.cpt:.3f}、"
+        f"cdc = {shear.cdc:.3f}(a/d' = "
+        f"{shear.shear_span / shear.column_face_depth:.3f})、"
+        f"参考 cds = {shear.cds:.3f}。"
+        + (
+            "地震時は τa1 の割増しに代えて τc を用いている。"
+            if shear.seismic
+            else ""
+        )
+    )
+    for note in shear.notes:
+        st.warning(note)
 
 
 def _render_level2(result) -> None:
@@ -923,11 +986,12 @@ def main() -> None:
         )
 
     (
-        tab_soil, tab_pile, tab_load, tab_liq, tab_stab, tab_l2, tab_cmp
+        tab_soil, tab_pile, tab_load, tab_liq, tab_stab, tab_l2, tab_footing,
+        tab_cmp,
     ) = st.tabs(
         [
             "地盤", "杭・フーチング", "荷重", "液状化判定", "安定計算",
-            "レベル2地震時", "杭種比較",
+            "レベル2地震時", "底版照査", "杭種比較",
         ]
     )
 
@@ -1553,6 +1617,101 @@ def main() -> None:
                 _render_level2(l2_result)
         elif st.session_state.get("level2") is not None:
             _render_level2(st.session_state.level2)
+
+    with tab_footing:
+        st.subheader("底版(フーチング)本体の許容応力度法照査")
+        st.caption(
+            "底版を**単鉄筋長方形RC断面**として、1つの照査断面の曲げ・せん断を"
+            "照査する(道示Ⅳ 8章)。**断面力 M・S は入力**する — 杭反力・"
+            "底版自重・上載土重量から各照査位置の断面力を求める計算は、柱の"
+            "位置・寸法を要し、原典の計算例が格点モデルで解いていて検証"
+            "できないため未実装。docs/VERIFICATION.md 第58回を参照。"
+        )
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1:
+            ft_fck = st.selectbox(
+                "底版の σck (N/mm²)", [21, 24, 27, 30], index=1,
+                key=f"ftfck_{nonce}",
+            )
+            ft_case = st.selectbox(
+                "荷重ケース", [c.value for c in LoadCase], index=0,
+                key=f"ftcase_{nonce}",
+            )
+            ft_grade = st.selectbox(
+                "主鉄筋の材質", list(REBAR_GRADES), index=0,
+                key=f"ftgrade_{nonce}",
+            )
+            ft_h = st.number_input(
+                "部材高 h (m)", 0.3, 10.0, value=2.5, step=0.1,
+                key=f"fth_{nonce}", help="底版の厚さ",
+            )
+            ft_d = st.number_input(
+                "有効高 d (m)", 0.2, 10.0, value=2.3, step=0.05,
+                key=f"ftd_{nonce}",
+                help="圧縮縁から引張主鉄筋重心までの距離(= h − かぶり)",
+            )
+        with fc2:
+            st.markdown("**曲げ照査**")
+            ft_m = st.number_input(
+                "曲げモーメント M (kN·m)", -1.0e6, 1.0e6, value=12963.75,
+                step=100.0, key=f"ftm_{nonce}",
+                help="符号は問わない(絶対値で扱う)",
+            )
+            ft_bm = st.number_input(
+                "曲げの有効幅 b (m)", 0.1, 100.0, value=12.0, step=0.1,
+                key=f"ftbm_{nonce}",
+            )
+            ft_as_m = st.number_input(
+                "引張主鉄筋量 As (mm²)", 0.0, 1.0e6, value=47629.8, step=100.0,
+                key=f"ftasm_{nonce}", help="曲げの有効幅にわたる合計量",
+            )
+        with fc3:
+            st.markdown("**せん断照査**")
+            ft_s = st.number_input(
+                "せん断力 S (kN)", -1.0e6, 1.0e6, value=9132.81, step=100.0,
+                key=f"fts_{nonce}",
+            )
+            ft_bs = st.number_input(
+                "せん断の部材幅 b (m)", 0.1, 100.0, value=14.4, step=0.1,
+                key=f"ftbs_{nonce}",
+                help="**フーチング全幅**を用いる(曲げの有効幅ではない)",
+            )
+            ft_as_s = st.number_input(
+                "同断面の引張主鉄筋量 As (mm²)", 0.0, 1.0e6, value=57763.8,
+                step=100.0, key=f"ftass_{nonce}",
+                help="pt = As/(b·d) の算定に用いる。全幅にわたる合計量",
+            )
+            ft_a = st.number_input(
+                "せん断スパン a (m)", 0.01, 50.0, value=1.65, step=0.05,
+                key=f"fta_{nonce}",
+            )
+            ft_dp = st.number_input(
+                "柱前面での有効高 d' (m)", 0.1, 10.0, value=2.3, step=0.05,
+                key=f"ftdp_{nonce}",
+            )
+
+        if st.button("底版照査を実行", key=f"ftrun_{nonce}"):
+            try:
+                case_obj = LoadCase(ft_case)
+                increase = STRESS_INCREASE[case_obj.value]
+                sigma_sa = rebar_tension_allowable(
+                    ft_grade, case_obj, underwater=False, increase=increase
+                )
+                flexure = check_footing_flexure(
+                    moment=ft_m, width=ft_bm, height=ft_h,
+                    effective_depth=ft_d, rebar_area=ft_as_m / 1.0e6,
+                    fck=int(ft_fck), case=case_obj, sigma_sa=sigma_sa,
+                    rebar_grade=ft_grade,
+                )
+                shear = check_footing_shear(
+                    shear=ft_s, width=ft_bs, effective_depth=ft_d,
+                    rebar_area=ft_as_s / 1.0e6, shear_span=ft_a,
+                    column_face_depth=ft_dp, fck=int(ft_fck), case=case_obj,
+                )
+            except (ValueError, NotImplementedError) as exc:
+                st.error(f"計算エラー: {exc}")
+            else:
+                _render_footing(flexure, shear)
 
     with tab_cmp:
         st.subheader("杭種・工法の比較(形式選定の支援)")

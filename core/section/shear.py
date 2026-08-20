@@ -143,9 +143,23 @@ def tensile_rebar_ratio(
     return 100.0 * area / (b * d)
 
 
-def _interpolate(table: tuple[tuple[float, float], ...], x: float) -> float:
-    """表の線形補間。範囲外は端の値で頭打ちにする。"""
+def _interpolate(
+    table: tuple[tuple[float, float], ...],
+    x: float,
+    extrapolate_low: bool = False,
+) -> float:
+    """表の線形補間。範囲外は端の値で頭打ちにする。
+
+    ``extrapolate_low`` を真にすると、表の**下限より小さい** x に対して
+    最初の2点の勾配で線形外挿する(底版の cpt。
+    :func:`core.section.footing.cpt_factor_footing` の説明を参照)。
+    外挿値が負になる場合は 0 で下打ちする。
+    """
     if x <= table[0][0]:
+        if extrapolate_low and len(table) >= 2:
+            (x0, y0), (x1, y1) = table[0], table[1]
+            slope = (y1 - y0) / (x1 - x0)
+            return max(0.0, y0 + slope * (x - x0))
         return table[0][1]
     if x >= table[-1][0]:
         return table[-1][1]

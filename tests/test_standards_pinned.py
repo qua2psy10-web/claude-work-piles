@@ -353,6 +353,27 @@ def test_shear_correction_factor_tables():
     )
 
 
+def test_footing_shear_span_factor_tables():
+    """底版のせん断スパン比による係数(第58回、Kui_8 7.6 で確認)。"""
+    assert st.SHEAR_CDC_BY_SPAN_RATIO == (
+        (0.5, 6.4), (1.0, 4.0), (1.5, 2.5), (2.0, 1.6), (2.5, 1.0)
+    )
+    # せん断スパンが長いほど割増しは小さく、最後は 1.0(割増しなし)
+    assert [c for _, c in st.SHEAR_CDC_BY_SPAN_RATIO] == sorted(
+        (c for _, c in st.SHEAR_CDC_BY_SPAN_RATIO), reverse=True
+    )
+    assert st.SHEAR_CDC_BY_SPAN_RATIO[-1][1] == 1.0
+    # cds の頭打ちは cdc が割増しなしになる a/d' と一致する
+    assert st.SHEAR_CDS_SPAN_RATIO_LIMIT == st.SHEAR_CDC_BY_SPAN_RATIO[-1][0]
+
+
+def test_concrete_stress_strain_break_points():
+    """道示Ⅲ 3.2 の応力度〜ひずみ曲線(σck ≦ 50)の折れ点ひずみ。"""
+    assert st.CONCRETE_STRAIN_PEAK == 0.002
+    assert st.CONCRETE_STRAIN_ULTIMATE == 0.0035
+    assert st.CONCRETE_STRAIN_PEAK < st.CONCRETE_STRAIN_ULTIMATE
+
+
 def test_rebar_allowable_stresses():
     """道示Ⅳ(H24) 表-4.3.1。**原典(スキャン)で照合済み**(第23回)。
 
